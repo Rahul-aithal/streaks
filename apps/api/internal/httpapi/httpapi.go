@@ -31,6 +31,8 @@ type Server struct {
 	Sync   *syncer.Syncer
 	Secret string
 	Now    func() time.Time
+
+	oauthStates *stateStore
 }
 
 // Handler returns the routes behind the shared-secret check.
@@ -50,11 +52,19 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /sync/github", s.syncNow(syncer.KindGitHub))
 	api.HandleFunc("POST /sync/google-tasks", s.syncNow(syncer.KindGoogle))
 	api.HandleFunc("GET /summary/today", s.summaryToday)
+	api.HandleFunc("GET /google-accounts", s.listGoogleAccounts)
+	api.HandleFunc("POST /google-accounts/connect", s.connectGoogle)
+	api.HandleFunc("DELETE /google-accounts/{id}", s.disconnectGoogle)
+
+	s.oauthStates = newStateStore(s.Now)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}) // No DB call: must not wake Neon.
 	})
+	// Google's redirect can't carry the secret header. The one-time state value,
+	// issued only to secret holders, protects this route instead.
+	root.HandleFunc("GET /oauth/google/callback", s.googleCallback)
 	root.Handle("/", s.requireSecret(api))
 	return root
 }
@@ -474,6 +484,7 @@ type summaryHabit struct {
 
 type summaryTask struct {
 	ID          string      `json:"id"`
+	Account     string      `json:"account"`
 	Title       string      `json:"title"`
 	Status      string      `json:"status"`
 	Due         *streak.Day `json:"due"`
@@ -511,6 +522,12 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accounts, err := s.Store.ListGoogleAccounts(ctx)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
 	items := []summaryHabit{}
 	for _, h := range habits {
 		if h.ArchivedAt != nil {
@@ -537,7 +554,7 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 	taskItems := make([]summaryTask, 0, len(todayTasks))
 	for _, t := range todayTasks {
 		taskItems = append(taskItems, summaryTask{
-			ID: t.GoogleID, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
+			ID: t.GoogleID, Account: t.AccountEmail, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
 			Overdue: t.Status != "completed" && t.Due != nil && *t.Due < today,
 		})
 	}
@@ -551,6 +568,7 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 			"overdue":   snap.Overdue,
 			"items":     taskItems,
 			"sync":      googleRun,
+			"accounts":  toAccountsJSON(accounts),
 		},
 		"streaks": map[string]any{
 			"daily": streak.ComputeDaily(dailyInputs(habits), today),

@@ -2,9 +2,12 @@ package gtasks
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -95,9 +98,9 @@ func TestFetchTasksRequestsHiddenAndPages(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient("id", "secret", "rt")
+	c := NewClient("id", "secret", "http://cb")
 	c.BaseURL, c.TokenURL = srv.URL, srv.URL+"/token"
-	got, err := c.FetchTasks(context.Background(), *mustDay(t, "2026-11-04"))
+	got, err := c.FetchTasks(context.Background(), "rt", *mustDay(t, "2026-11-04"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,20 +112,78 @@ func TestFetchTasksRequestsHiddenAndPages(t *testing.T) {
 	}
 }
 
-func TestExpiredRefreshTokenExplainsFix(t *testing.T) {
+func TestExpiredRefreshTokenAsksToReconnect(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`)
 	}))
 	defer srv.Close()
 
-	c := NewClient("id", "topsecret", "rt")
+	c := NewClient("id", "topsecret", "http://cb")
 	c.TokenURL = srv.URL
-	_, err := c.FetchTasks(context.Background(), 0)
-	if err == nil || !strings.Contains(err.Error(), "make google-auth") {
-		t.Errorf("err = %v", err)
+	_, err := c.FetchTasks(context.Background(), "rt", 0)
+	if !errors.Is(err, ErrReconnect) {
+		t.Errorf("err = %v, want ErrReconnect", err)
 	}
-	if err != nil && strings.Contains(err.Error(), "topsecret") {
-		t.Errorf("error leaks the client secret: %v", err)
+}
+
+func idToken(claims string) string {
+	return "h." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".s"
+}
+
+func TestAuthCodeURL(t *testing.T) {
+	c := NewClient("id", "secret", "http://localhost:5173/api/oauth/google/callback")
+	u, err := url.Parse(c.AuthCodeURL("st"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	if q.Get("state") != "st" || q.Get("access_type") != "offline" ||
+		q.Get("redirect_uri") != c.RedirectURI || !strings.Contains(q.Get("prompt"), "consent") ||
+		!strings.Contains(q.Get("scope"), TasksScope) {
+		t.Errorf("query = %v", q)
+	}
+	if strings.Contains(u.String(), "secret") {
+		t.Error("URL leaks the client secret")
+	}
+}
+
+func TestExchangeCode(t *testing.T) {
+	good := idToken(`{"sub":"123","email":"a@example.com"}`)
+	tests := []struct {
+		name, response string
+		wantErr        error
+		wantOtherErr   bool
+	}{
+		{name: "ok", response: `{"refresh_token":"rt","scope":"openid ` + TasksScope + `","id_token":"` + good + `"}`},
+		{name: "tasks unticked", response: `{"refresh_token":"rt","scope":"openid email","id_token":"` + good + `"}`, wantErr: ErrMissingScope},
+		{name: "no refresh token", response: `{"scope":"` + TasksScope + `","id_token":"` + good + `"}`, wantErr: ErrNoRefreshToken},
+		{name: "bad ID token", response: `{"refresh_token":"rt","scope":"` + TasksScope + `","id_token":"nope"}`, wantOtherErr: true},
+		{name: "no sub", response: `{"refresh_token":"rt","scope":"` + TasksScope + `","id_token":"` + idToken(`{"email":"a"}`) + `"}`, wantOtherErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tc.response)
+			}))
+			defer srv.Close()
+			c := NewClient("id", "secret", "http://cb")
+			c.TokenURL = srv.URL
+			got, err := c.ExchangeCode(context.Background(), "code")
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("err = %v, want %v", err, tc.wantErr)
+				}
+			case tc.wantOtherErr:
+				if err == nil {
+					t.Error("want an error")
+				}
+			default:
+				if err != nil || got.Sub != "123" || got.Email != "a@example.com" || got.RefreshToken != "rt" {
+					t.Errorf("got %+v, %v", got, err)
+				}
+			}
+		})
 	}
 }

@@ -1,4 +1,5 @@
-.PHONY: install dev build build-api build-web test lint migrate migrate-status google-auth
+.PHONY: install dev build build-api build-web test lint migrate migrate-status
+
 
 BIN := bin/streaks
 
@@ -30,6 +31,3 @@ migrate: build-api
 
 migrate-status: build-api
 	./$(BIN) migrate status
-
-google-auth: build-api
-	./$(BIN) google-auth

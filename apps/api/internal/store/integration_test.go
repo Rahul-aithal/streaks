@@ -22,7 +22,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for _, table := range []string{"habits", "github_events", "tasks", "task_snapshots", "sync_runs"} {
+	for _, table := range []string{"habits", "github_events", "google_accounts", "task_snapshots", "sync_runs"} {
 		if _, err := s.pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatal(err)
 		}
@@ -82,19 +82,40 @@ func TestSyncRoundTrip(t *testing.T) {
 		{GoogleID: "b", ListID: "L", Title: "undated", Status: "needsAction"},
 		{GoogleID: "c", ListID: "L", Title: "done", Status: "completed", Due: &due, CompletedAt: &done},
 	}
+	account, err := s.UpsertGoogleAccount(ctx, "sub-1", "a@example.com", "sealed-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.UpsertGoogleAccount(ctx, "sub-2", "b@example.com", "sealed-2")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
-		if err := s.SaveTasks(ctx, tasks, today, TaskSnapshot{Total: 2, Completed: 1}); err != nil {
+		if err := s.SaveAccountTasks(ctx, account, tasks); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The same task ID under another account must not collide.
+	if err := s.SaveAccountTasks(ctx, other, tasks[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveTaskSnapshot(ctx, today, TaskSnapshot{Total: 2, Completed: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveTaskSnapshot(ctx, today, TaskSnapshot{Total: 3}); err != nil {
+		t.Fatal(err)
 	}
 	got, err := s.ListTasks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 {
+	if len(got) != 4 {
 		t.Fatalf("tasks = %+v", got)
 	}
 	for _, task := range got {
+		if task.AccountEmail != "a@example.com" {
+			continue
+		}
 		switch task.GoogleID {
 		case "a":
 			if task.Due == nil || *task.Due != today || task.CompletedAt != nil {
@@ -110,8 +131,17 @@ func TestSyncRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	if err := s.SaveTasks(ctx, nil, today, TaskSnapshot{}); err != nil {
+	if err := s.SaveAccountTasks(ctx, account, nil); err != nil {
 		t.Errorf("empty task sync: %v", err)
+	}
+	if got, _ := s.ListTasks(ctx); len(got) != 1 || got[0].AccountEmail != "b@example.com" {
+		t.Errorf("clearing one account should leave the other: %+v", got)
+	}
+	if err := s.DeleteGoogleAccount(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ListTasks(ctx); len(got) != 0 {
+		t.Errorf("deleting an account should remove its tasks: %+v", got)
 	}
 
 	// Sync state: a failure keeps the last success time.

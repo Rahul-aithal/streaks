@@ -70,12 +70,13 @@ func (s *Store) ContributionCounts(ctx context.Context, from, to streak.Day) (ma
 
 // Task is a cached Google Task.
 type Task struct {
-	GoogleID    string
-	ListID      string
-	Title       string
-	Status      string
-	Due         *streak.Day
-	CompletedAt *time.Time
+	AccountEmail string // Set when read back; ignored when saving.
+	GoogleID     string
+	ListID       string
+	Title        string
+	Status       string
+	Due          *streak.Day
+	CompletedAt  *time.Time
 }
 
 // TaskSnapshot holds one day's task counts.
@@ -85,10 +86,10 @@ type TaskSnapshot struct {
 	Overdue   int `json:"overdue"`
 }
 
-// SaveTasks replaces the task cache and upserts the day's snapshot in one transaction.
-func (s *Store) SaveTasks(ctx context.Context, tasks []Task, day streak.Day, snap TaskSnapshot) error {
+// SaveAccountTasks replaces one account's cached tasks. Other accounts are untouched.
+func (s *Store) SaveAccountTasks(ctx context.Context, accountID int64, tasks []Task) error {
 	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM tasks`); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM tasks WHERE account_id = $1`, accountID); err != nil {
 			return err
 		}
 		n := len(tasks)
@@ -105,13 +106,18 @@ func (s *Store) SaveTasks(ctx context.Context, tasks []Task, day streak.Day, sna
 				completed[i] = &v
 			}
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO tasks (google_id, list_id, title, status, due, completed_at)
-			SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[],
-				$5::text[]::date[], $6::text[]::timestamptz[])`,
-			ids, lists, titles, statuses, dues, completed); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO task_snapshots (day, total, completed, overdue)
+		_, err := tx.Exec(ctx, `INSERT INTO tasks (account_id, google_id, list_id, title, status, due, completed_at)
+			SELECT $1::bigint, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[],
+				$6::text[]::date[], $7::text[]::timestamptz[])`,
+			accountID, ids, lists, titles, statuses, dues, completed)
+		return err
+	})
+}
+
+// SaveTaskSnapshot upserts one day's combined task counts.
+func (s *Store) SaveTaskSnapshot(ctx context.Context, day streak.Day, snap TaskSnapshot) error {
+	return s.run(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `INSERT INTO task_snapshots (day, total, completed, overdue)
 			VALUES ($1::date, $2, $3, $4)
 			ON CONFLICT (day) DO UPDATE SET total = EXCLUDED.total, completed = EXCLUDED.completed,
 				overdue = EXCLUDED.overdue, taken_at = now()`,
@@ -120,23 +126,94 @@ func (s *Store) SaveTasks(ctx context.Context, tasks []Task, day streak.Day, sna
 	})
 }
 
-// ListTasks returns all cached tasks.
+// ListTasks returns all cached tasks across accounts.
 func (s *Store) ListTasks(ctx context.Context) ([]Task, error) {
 	var tasks []Task
 	err := s.run(ctx, func(ctx context.Context) error {
-		rows, err := s.pool.Query(ctx, `SELECT google_id, list_id, title, status, due, completed_at
-			FROM tasks ORDER BY due NULLS LAST, title`)
+		rows, err := s.pool.Query(ctx, `SELECT a.email, t.google_id, t.list_id, t.title, t.status, t.due, t.completed_at
+			FROM tasks t JOIN google_accounts a ON a.id = t.account_id
+			ORDER BY t.due NULLS LAST, t.title`)
 		if err != nil {
 			return err
 		}
 		tasks, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Task, error) {
 			var t Task
-			err := r.Scan(&t.GoogleID, &t.ListID, &t.Title, &t.Status, &t.Due, &t.CompletedAt)
+			err := r.Scan(&t.AccountEmail, &t.GoogleID, &t.ListID, &t.Title, &t.Status, &t.Due, &t.CompletedAt)
 			return t, err
 		})
 		return err
 	})
 	return tasks, err
+}
+
+// GoogleAccount is a connected Google account.
+type GoogleAccount struct {
+	ID              int64
+	Email           string
+	RefreshTokenEnc string
+	LastSuccessAt   *time.Time
+	LastError       *string
+	NeedsReconnect  bool
+	CreatedAt       time.Time
+}
+
+// UpsertGoogleAccount connects an account, or refreshes it if already connected.
+func (s *Store) UpsertGoogleAccount(ctx context.Context, sub, email, refreshTokenEnc string) (int64, error) {
+	var id int64
+	err := s.run(ctx, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, `INSERT INTO google_accounts (google_sub, email, refresh_token_enc)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (google_sub) DO UPDATE SET email = EXCLUDED.email,
+				refresh_token_enc = EXCLUDED.refresh_token_enc,
+				last_error = NULL, needs_reconnect = false, updated_at = now()
+			RETURNING id`, sub, email, refreshTokenEnc).Scan(&id)
+	})
+	return id, err
+}
+
+// ListGoogleAccounts returns all connected accounts, oldest first.
+func (s *Store) ListGoogleAccounts(ctx context.Context) ([]GoogleAccount, error) {
+	var accounts []GoogleAccount
+	err := s.run(ctx, func(ctx context.Context) error {
+		rows, err := s.pool.Query(ctx, `SELECT id, email, refresh_token_enc, last_success_at, last_error,
+			needs_reconnect, created_at FROM google_accounts ORDER BY created_at, id`)
+		if err != nil {
+			return err
+		}
+		accounts, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (GoogleAccount, error) {
+			var a GoogleAccount
+			err := r.Scan(&a.ID, &a.Email, &a.RefreshTokenEnc, &a.LastSuccessAt, &a.LastError, &a.NeedsReconnect, &a.CreatedAt)
+			return a, err
+		})
+		return err
+	})
+	return accounts, err
+}
+
+// RecordAccountSync stores one account's sync outcome. A failure keeps its cached
+// tasks and its last success time.
+func (s *Store) RecordAccountSync(ctx context.Context, id int64, syncErr error, needsReconnect bool) error {
+	return s.run(ctx, func(ctx context.Context) error {
+		if syncErr == nil {
+			_, err := s.pool.Exec(ctx, `UPDATE google_accounts SET last_success_at = now(), last_error = NULL,
+				needs_reconnect = false, updated_at = now() WHERE id = $1`, id)
+			return err
+		}
+		_, err := s.pool.Exec(ctx, `UPDATE google_accounts SET last_error = $2, needs_reconnect = $3,
+			updated_at = now() WHERE id = $1`, id, syncErr.Error(), needsReconnect)
+		return err
+	})
+}
+
+// DeleteGoogleAccount removes an account and, by cascade, its cached tasks.
+func (s *Store) DeleteGoogleAccount(ctx context.Context, id int64) error {
+	return s.run(ctx, func(ctx context.Context) error {
+		tag, err := s.pool.Exec(ctx, `DELETE FROM google_accounts WHERE id = $1`, id)
+		if err == nil && tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return err
+	})
 }
 
 // SyncRun is the last recorded outcome of a sync kind.

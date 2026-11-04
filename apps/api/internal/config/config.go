@@ -22,7 +22,8 @@ type Config struct {
 
 	GoogleClientID     string
 	GoogleClientSecret string
-	GoogleRefreshToken string
+	GoogleTokenKey     string
+	GoogleRedirectURI  string
 }
 
 // GitHubEnabled reports whether GitHub sync is configured.
@@ -30,7 +31,7 @@ func (c Config) GitHubEnabled() bool { return c.GitHubUsername != "" && c.GitHub
 
 // GoogleEnabled reports whether Google Tasks sync is configured.
 func (c Config) GoogleEnabled() bool {
-	return c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GoogleRefreshToken != ""
+	return c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GoogleTokenKey != ""
 }
 
 // Load reads .env (real environment variables win) and returns the config.
@@ -49,7 +50,8 @@ func Load() (Config, error) {
 		GitHubToken:        os.Getenv("GITHUB_TOKEN"),
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		GoogleRefreshToken: os.Getenv("GOOGLE_REFRESH_TOKEN"),
+		GoogleTokenKey:     os.Getenv("GOOGLE_TOKEN_KEY"),
+		GoogleRedirectURI:  envOr("GOOGLE_REDIRECT_URI", "http://localhost:5173/api/oauth/google/callback"),
 	}
 	interval, err := time.ParseDuration(envOr("SYNC_INTERVAL", "6h"))
 	if err != nil || interval <= 0 {

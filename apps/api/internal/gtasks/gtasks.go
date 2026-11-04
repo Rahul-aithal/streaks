@@ -3,12 +3,14 @@ package gtasks
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,33 +18,133 @@ import (
 	"streaks/internal/streak"
 )
 
-// Scope is the only permission requested.
-const Scope = "https://www.googleapis.com/auth/tasks.readonly"
+// TasksScope is the only permission on the user's data. openid and email just
+// identify which account connected.
+const TasksScope = "https://www.googleapis.com/auth/tasks.readonly"
 
-// TokenURL is Google's OAuth token endpoint.
-const TokenURL = "https://oauth2.googleapis.com/token"
+// ErrReconnect means Google no longer accepts the account's refresh token.
+var ErrReconnect = errors.New("Google access expired or was revoked: reconnect this account")
+
+// ErrMissingScope means the user unticked Tasks access on Google's consent screen.
+var ErrMissingScope = errors.New("Google Tasks access was not granted")
+
+// ErrNoRefreshToken means Google didn't issue a long-lived token.
+var ErrNoRefreshToken = errors.New("Google returned no refresh token")
 
 // completedRetention limits how much old completed work is cached.
 const completedRetention = 7
 
+// Client holds the app's OAuth credentials. It's shared by all accounts; each
+// call takes the refresh token of the account it acts for.
 type Client struct {
 	ClientID     string
 	ClientSecret string
-	RefreshToken string
-	BaseURL      string
+	RedirectURI  string
+	AuthURL      string
 	TokenURL     string
+	RevokeURL    string
+	BaseURL      string
 	HTTP         *http.Client
 }
 
-func NewClient(clientID, clientSecret, refreshToken string) *Client {
+func NewClient(clientID, clientSecret, redirectURI string) *Client {
 	return &Client{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		RefreshToken: refreshToken,
+		RedirectURI:  redirectURI,
+		AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL:     "https://oauth2.googleapis.com/token",
+		RevokeURL:    "https://oauth2.googleapis.com/revoke",
 		BaseURL:      "https://tasks.googleapis.com/tasks/v1",
-		TokenURL:     TokenURL,
 		HTTP:         &http.Client{Timeout: 20 * time.Second},
 	}
+}
+
+// AuthCodeURL returns the page where the user picks an account and approves access.
+func (c *Client) AuthCodeURL(state string) string {
+	return c.AuthURL + "?" + url.Values{
+		"client_id":     {c.ClientID},
+		"redirect_uri":  {c.RedirectURI},
+		"response_type": {"code"},
+		"scope":         {"openid email " + TasksScope},
+		"access_type":   {"offline"},
+		// select_account lets you add a second account while signed in to the
+		// first; consent makes Google issue a refresh token every time.
+		"prompt": {"select_account consent"},
+		"state":  {state},
+	}.Encode()
+}
+
+// Identity is a newly connected account.
+type Identity struct {
+	Sub          string
+	Email        string
+	RefreshToken string
+}
+
+// ExchangeCode trades the code from the OAuth callback for the account's identity and token.
+func (c *Client) ExchangeCode(ctx context.Context, code string) (Identity, error) {
+	tok, err := c.postToken(ctx, url.Values{
+		"client_id":     {c.ClientID},
+		"client_secret": {c.ClientSecret},
+		"code":          {code},
+		"redirect_uri":  {c.RedirectURI},
+		"grant_type":    {"authorization_code"},
+	})
+	if err != nil {
+		return Identity{}, err
+	}
+	if !slices.Contains(strings.Fields(tok.Scope), TasksScope) {
+		return Identity{}, ErrMissingScope
+	}
+	if tok.RefreshToken == "" {
+		return Identity{}, ErrNoRefreshToken
+	}
+	sub, email, err := parseIDToken(tok.IDToken)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{Sub: sub, Email: email, RefreshToken: tok.RefreshToken}, nil
+}
+
+// parseIDToken reads the claims of an ID token. Its signature needn't be checked
+// because the token came directly from Google over TLS, not through the browser.
+func parseIDToken(token string) (sub, email string, err error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", "", errors.New("google token: malformed ID token")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", errors.New("google token: malformed ID token")
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.Sub == "" {
+		return "", "", errors.New("google token: ID token has no account ID")
+	}
+	return claims.Sub, claims.Email, nil
+}
+
+// Revoke tells Google to invalidate a refresh token.
+func (c *Client) Revoke(ctx context.Context, refreshToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.RevokeURL,
+		strings.NewReader(url.Values{"token": {refreshToken}}.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return errors.New("google revoke: request failed") // The URL error could quote nothing useful.
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("google revoke: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 type rawTask struct {
@@ -53,9 +155,9 @@ type rawTask struct {
 	Completed *time.Time `json:"completed"`
 }
 
-// FetchTasks returns open tasks and recently completed tasks from all lists.
-func (c *Client) FetchTasks(ctx context.Context, today streak.Day) ([]store.Task, error) {
-	token, err := c.accessToken(ctx)
+// FetchTasks returns one account's open and recently completed tasks from all its lists.
+func (c *Client) FetchTasks(ctx context.Context, refreshToken string, today streak.Day) ([]store.Task, error) {
+	token, err := c.accessToken(ctx, refreshToken)
 	if err != nil {
 		return nil, err
 	}
@@ -187,11 +289,11 @@ func (c *Client) get(ctx context.Context, token, path string, out any) error {
 	return nil
 }
 
-func (c *Client) accessToken(ctx context.Context) (string, error) {
-	tok, err := ExchangeToken(ctx, c.HTTP, c.TokenURL, url.Values{
+func (c *Client) accessToken(ctx context.Context, refreshToken string) (string, error) {
+	tok, err := c.postToken(ctx, url.Values{
 		"client_id":     {c.ClientID},
 		"client_secret": {c.ClientSecret},
-		"refresh_token": {c.RefreshToken},
+		"refresh_token": {refreshToken},
 		"grant_type":    {"refresh_token"},
 	})
 	if err != nil {
@@ -200,27 +302,28 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	return tok.AccessToken, nil
 }
 
-// Token is Google's token endpoint response.
-type Token struct {
+type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	Scope        string `json:"scope"`
 }
 
-// ExchangeToken posts a grant to the token endpoint. Errors include Google's
-// error text but never the request, which holds the credentials.
-func ExchangeToken(ctx context.Context, hc *http.Client, tokenURL string, form url.Values) (Token, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+// postToken posts a grant to the token endpoint. Errors include Google's error
+// text but never the request, which holds the credentials.
+func (c *Client) postToken(ctx context.Context, form url.Values) (tokenResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return Token{}, err
+		return tokenResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := hc.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return Token{}, fmt.Errorf("google token: %w", err)
+		return tokenResponse{}, fmt.Errorf("google token: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -229,15 +332,14 @@ func ExchangeToken(ctx context.Context, hc *http.Client, tokenURL string, form u
 			Description string `json:"error_description"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&e)
-		msg := fmt.Sprintf("google token: status %d: %s %s", resp.StatusCode, e.Error, e.Description)
 		if e.Error == "invalid_grant" {
-			msg += " (refresh token expired or revoked: run `make google-auth`; the OAuth app must be In production)"
+			return tokenResponse{}, ErrReconnect
 		}
-		return Token{}, errors.New(msg)
+		return tokenResponse{}, fmt.Errorf("google token: status %d: %s %s", resp.StatusCode, e.Error, e.Description)
 	}
-	var tok Token
+	var tok tokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
-		return Token{}, fmt.Errorf("google token: decode: %w", err)
+		return tokenResponse{}, fmt.Errorf("google token: decode: %w", err)
 	}
 	return tok, nil
 }
