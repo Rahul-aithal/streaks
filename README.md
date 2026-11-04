@@ -29,7 +29,7 @@ make install
 
 1. In the [Google Cloud console](https://console.cloud.google.com), create a project and enable the **Google Tasks API**.
 2. Under **Google Auth Platform**, set the audience to **External**, and add the `openid`, `email`, `profile` and `tasks.readonly` scopes.
-3. Choose who can get in. In **Testing**, list every account under **Test users**; tokens reportedly expire after 7 days, and Streaks then asks you to reconnect. **Publishing** the app removes both limits, and Google shows an "unverified app" warning you can click through for your own app.
+3. Choose who can get in. In **Testing**, list every account under **Test users**; tokens reportedly expire after 7 days, and Streaks then asks you to reconnect. **Publishing** the app removes both limits, but then anyone with a Google account can sign in, because Streaks has no list of its own. Google also shows an "unverified app" warning you can click through for your own app.
 4. Create an OAuth client of type **Web application**, with this **Authorized redirect URI**:
 
    ```
@@ -39,7 +39,6 @@ make install
 5. In `.env`, set:
    - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
    - `GOOGLE_TOKEN_KEY`, from `openssl rand -hex 32`
-   - `ALLOWED_EMAILS`, listing every Google account that may sign in
 
 Then create the tables:
 
@@ -125,7 +124,7 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 
 ## Security
 
-- **Sign-in:** only accounts in `ALLOWED_EMAILS` can get in, and their email must be verified by Google.
+- **Sign-in:** any Google account that gets past Google's consent screen can sign in, as long as Google has verified its email. While the Google app is in Testing, that means only its test users. Publishing the app would let anyone with a Google account in, each with their own empty account.
 - **Sessions:** an HttpOnly, SameSite=Lax cookie that lasts 30 days. Only its SHA-256 hash is stored, and signing out invalidates it on the server.
 - **Isolation:** every data query is scoped to the signed-in user. Another user's habit returns 404.
 - **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them.

@@ -10,7 +10,6 @@ const ERRORS: Record<string, string> = {
   denied: "Google sign-in was cancelled.",
   expired: "That sign-in expired. Please try again.",
   missing_scope: "Streaks needs access to Google Tasks. Please try again and tick the Tasks box.",
-  not_allowed: "This Google account isn't allowed. Add its email to ALLOWED_EMAILS in .env, then restart.",
   unverified: "Google hasn't verified this account's email address.",
   failed: "Sign-in failed. Check the API logs and try again.",
 }

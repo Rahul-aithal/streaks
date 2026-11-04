@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +28,6 @@ const (
 	errDenied       = "denied"
 	errExpired      = "expired"
 	errMissingScope = "missing_scope"
-	errNotAllowed   = "not_allowed"
 	errUnverified   = "unverified"
 	errFailed       = "failed"
 )
@@ -155,10 +153,6 @@ func (s *Server) clearCookie(w http.ResponseWriter, name string) {
 	})
 }
 
-func (s *Server) emailAllowed(email string) bool {
-	return slices.Contains(s.AllowedEmails, strings.ToLower(email))
-}
-
 // startGoogleLogin is a plain link, so it takes no session. The state cookie ties
 // the callback to this browser, so nobody can sign you in to their account.
 func (s *Server) startGoogleLogin(w http.ResponseWriter, r *http.Request) {
@@ -203,16 +197,6 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		slog.Error("google login failed", "err", err)
 		redirectLoginError(w, r, errFailed)
-		return
-	}
-	if !s.emailAllowed(identity.Email) {
-		if identity.RefreshToken != "" { // We won't use it, so don't leave it valid.
-			if err := s.Sync.Google.Revoke(r.Context(), identity.RefreshToken); err != nil {
-				slog.Warn("revoke refused account", "err", err)
-			}
-		}
-		slog.Warn("sign-in refused: email is not in ALLOWED_EMAILS")
-		redirectLoginError(w, r, errNotAllowed)
 		return
 	}
 

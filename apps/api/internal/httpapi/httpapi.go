@@ -28,8 +28,7 @@ type Server struct {
 	Sync  *syncer.Syncer
 	Now   func() time.Time
 
-	AllowedEmails []string // Lowercase. Only these Google accounts may sign in.
-	WebOrigin     string   // Browser origin allowed to make state-changing requests.
+	WebOrigin     string // Browser origin allowed to make state-changing requests.
 	SecureCookies bool
 
 	oauthStates *stateStore

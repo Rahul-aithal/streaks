@@ -95,7 +95,6 @@ func serve(cfg config.Config) error {
 		Store:         st,
 		Sync:          sync,
 		Now:           time.Now,
-		AllowedEmails: cfg.AllowedEmails,
 		WebOrigin:     cfg.WebOrigin(),
 		SecureCookies: cfg.SecureCookies(),
 	}

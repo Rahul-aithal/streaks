@@ -298,7 +298,6 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 11, 4, 6, 0, 0, 0, time.UTC) }
 	server := &Server{
 		Store: st, Now: now, WebOrigin: "http://web",
-		AllowedEmails: []string{"alice@example.com", "bob@example.com", "dave@example.com", "erin@example.com"},
 		Sync: &syncer.Syncer{
 			Store: st, Google: google, Box: box, GitHubBaseURL: services.URL, Interval: time.Hour, Now: now,
 		},
@@ -325,18 +324,6 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	state, _ = b.startLogin("")
 	if loc := b.callback("state=" + state + "&error=access_denied"); !strings.Contains(loc, "error=denied") {
 		t.Errorf("denied: %q", loc)
-	}
-	if loc := b.login("code-carol"); !strings.Contains(loc, "error=not_allowed") {
-		t.Errorf("email outside the allowlist: %q", loc)
-	}
-	fake.mu.Lock()
-	revokedCarol := fake.revoked["rt-carol"]
-	fake.mu.Unlock()
-	if !revokedCarol {
-		t.Error("a refused account's token should be revoked")
-	}
-	if code := b.call(http.MethodGet, "/auth/me", nil, nil); code != http.StatusUnauthorized {
-		t.Errorf("refused account got a session: %d", code)
 	}
 	if loc := b.login("code-erin"); !strings.Contains(loc, "error=missing_scope") {
 		t.Errorf("unticked Tasks: %q", loc)
@@ -628,5 +615,14 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	}
 	if code := third.call(http.MethodGet, "/auth/me", nil, nil); code != http.StatusUnauthorized {
 		t.Errorf("after sign out all: %d", code)
+	}
+
+	// Google decides who gets this far, so any verified account can sign in.
+	carol := newBrowser(t, api.URL)
+	if loc := carol.login("code-carol"); strings.Contains(loc, "error=") {
+		t.Errorf("new account refused: %q", loc)
+	}
+	if code := carol.call(http.MethodGet, "/auth/me", nil, nil); code != http.StatusOK {
+		t.Errorf("new account has no session: %d", code)
 	}
 }

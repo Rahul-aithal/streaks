@@ -17,9 +17,6 @@ type Config struct {
 	APIPort           string
 	SyncInterval      time.Duration
 
-	// Only these Google accounts may sign in. Lowercased.
-	AllowedEmails []string
-
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleTokenKey     string
@@ -47,8 +44,6 @@ func (c Config) ValidateServe() error {
 		return errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required: sign-in uses Google")
 	case c.GoogleTokenKey == "":
 		return errors.New("GOOGLE_TOKEN_KEY is required: openssl rand -hex 32")
-	case len(c.AllowedEmails) == 0:
-		return errors.New("ALLOWED_EMAILS is required: list the Google accounts that may sign in")
 	}
 	return nil
 }
@@ -64,7 +59,6 @@ func Load() (Config, error) {
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		DatabaseURLDirect:  os.Getenv("DATABASE_URL_DIRECT"),
 		APIPort:            envOr("API_PORT", "8080"),
-		AllowedEmails:      parseEmails(os.Getenv("ALLOWED_EMAILS")),
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleTokenKey:     os.Getenv("GOOGLE_TOKEN_KEY"),
@@ -76,16 +70,6 @@ func Load() (Config, error) {
 	}
 	c.SyncInterval = interval
 	return c, nil
-}
-
-func parseEmails(list string) []string {
-	emails := []string{}
-	for _, e := range strings.Split(list, ",") {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
-			emails = append(emails, e)
-		}
-	}
-	return emails
 }
 
 func envOr(key, fallback string) string {

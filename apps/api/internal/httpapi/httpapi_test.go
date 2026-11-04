@@ -114,13 +114,3 @@ func TestCallbackRejectsMissingState(t *testing.T) {
 		t.Errorf("code=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
 }
-
-func TestEmailAllowlist(t *testing.T) {
-	s := &Server{AllowedEmails: []string{"me@example.com"}}
-	if !s.emailAllowed("Me@Example.com") {
-		t.Error("allowed email refused")
-	}
-	if s.emailAllowed("other@example.com") || s.emailAllowed("") {
-		t.Error("other email accepted")
-	}
-}

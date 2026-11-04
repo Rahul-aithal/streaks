@@ -27,22 +27,12 @@ func TestParseLine(t *testing.T) {
 	}
 }
 
-func TestParseEmails(t *testing.T) {
-	got := parseEmails(" A@Example.com, b@example.com ,,")
-	if len(got) != 2 || got[0] != "a@example.com" || got[1] != "b@example.com" {
-		t.Errorf("parseEmails = %v", got)
-	}
-	if got := parseEmails(""); len(got) != 0 {
-		t.Errorf("empty list = %v", got)
-	}
-}
-
-func TestValidateServeRequiresAllowlist(t *testing.T) {
-	c := Config{DatabaseURL: "x", GoogleClientID: "x", GoogleClientSecret: "x", GoogleTokenKey: "x"}
+func TestValidateServe(t *testing.T) {
+	c := Config{DatabaseURL: "x", GoogleClientID: "x", GoogleClientSecret: "x"}
 	if err := c.ValidateServe(); err == nil {
-		t.Error("an empty allowlist must not start the server")
+		t.Error("a missing token key must not start the server")
 	}
-	c.AllowedEmails = []string{"a@example.com"}
+	c.GoogleTokenKey = "x"
 	if err := c.ValidateServe(); err != nil {
 		t.Error(err)
 	}
