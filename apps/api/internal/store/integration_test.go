@@ -22,14 +22,22 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for _, table := range []string{"habits", "github_events", "google_accounts", "task_snapshots", "sync_runs"} {
+	for _, table := range []string{"users", "habits"} { // Cascades to everything else.
 		if _, err := s.pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatal(err)
 		}
 	}
+	user, err := s.SaveSignIn(ctx, "sub-1", "a@example.com", "A", "", "sealed-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.SaveSignIn(ctx, "sub-2", "b@example.com", "B", "", "sealed-2")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	today, _ := streak.ParseDay("2026-11-04")
-	id, err := s.CreateHabit(ctx, "code", "github", streak.EveryDay, today)
+	id, err := s.CreateHabit(ctx, user, "code", "github", streak.EveryDay, today)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,18 +48,18 @@ func TestSyncRoundTrip(t *testing.T) {
 		{ID: "2", Type: "PushEvent", OccurredAt: at.Add(-time.Second)},
 	}
 	for range 2 { // Re-running must not double-count.
-		if err := s.SaveGitHubEvents(ctx, events); err != nil {
+		if err := s.SaveGitHubEvents(ctx, user, events); err != nil {
 			t.Fatal(err)
 		}
 	}
-	counts, err := s.ContributionCounts(ctx, today-1, today)
+	counts, err := s.ContributionCounts(ctx, user, today-1, today)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if counts[today] != 1 || counts[today-1] != 1 {
 		t.Errorf("counts = %v", counts)
 	}
-	h, err := s.GetHabit(ctx, id)
+	h, err := s.GetHabit(ctx, user, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,15 +71,15 @@ func TestSyncRoundTrip(t *testing.T) {
 	}
 
 	// A habit created later picks up activity that's already synced.
-	later, err := s.CreateHabit(ctx, "code 2", "github", streak.EveryDay, today)
+	later, err := s.CreateHabit(ctx, user, "code 2", "github", streak.EveryDay, today)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := s.GetHabit(ctx, later); len(h.CheckIns) != 2 {
+	if h, _ := s.GetHabit(ctx, user, later); len(h.CheckIns) != 2 {
 		t.Errorf("later habit check-ins = %v", h.CheckIns)
 	}
 
-	if err := s.SaveGitHubEvents(ctx, nil); err != nil {
+	if err := s.SaveGitHubEvents(ctx, user, nil); err != nil {
 		t.Errorf("empty sync: %v", err)
 	}
 
@@ -82,40 +90,23 @@ func TestSyncRoundTrip(t *testing.T) {
 		{GoogleID: "b", ListID: "L", Title: "undated", Status: "needsAction"},
 		{GoogleID: "c", ListID: "L", Title: "done", Status: "completed", Due: &due, CompletedAt: &done},
 	}
-	account, err := s.UpsertGoogleAccount(ctx, "sub-1", "a@example.com", "sealed-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := s.UpsertGoogleAccount(ctx, "sub-2", "b@example.com", "sealed-2")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for range 2 {
-		if err := s.SaveAccountTasks(ctx, account, tasks); err != nil {
+		if err := s.SaveTasks(ctx, user, tasks, today, TaskSnapshot{Total: 2, Completed: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The same task ID under another account must not collide.
-	if err := s.SaveAccountTasks(ctx, other, tasks[:1]); err != nil {
+	// The same task ID under another user must not collide.
+	if err := s.SaveTasks(ctx, other, tasks[:1], today, TaskSnapshot{Total: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveTaskSnapshot(ctx, today, TaskSnapshot{Total: 2, Completed: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveTaskSnapshot(ctx, today, TaskSnapshot{Total: 3}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.ListTasks(ctx)
+	got, err := s.ListTasks(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 {
+	if len(got) != 3 {
 		t.Fatalf("tasks = %+v", got)
 	}
 	for _, task := range got {
-		if task.AccountEmail != "a@example.com" {
-			continue
-		}
 		switch task.GoogleID {
 		case "a":
 			if task.Due == nil || *task.Due != today || task.CompletedAt != nil {
@@ -131,27 +122,21 @@ func TestSyncRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	if err := s.SaveAccountTasks(ctx, account, nil); err != nil {
+	if err := s.SaveTasks(ctx, user, nil, today, TaskSnapshot{}); err != nil {
 		t.Errorf("empty task sync: %v", err)
 	}
-	if got, _ := s.ListTasks(ctx); len(got) != 1 || got[0].AccountEmail != "b@example.com" {
-		t.Errorf("clearing one account should leave the other: %+v", got)
-	}
-	if err := s.DeleteGoogleAccount(ctx, other); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := s.ListTasks(ctx); len(got) != 0 {
-		t.Errorf("deleting an account should remove its tasks: %+v", got)
+	if got, _ := s.ListTasks(ctx, other); len(got) != 1 {
+		t.Errorf("clearing one user's tasks should leave the other's: %+v", got)
 	}
 
 	// Sync state: a failure keeps the last success time.
-	if err := s.RecordSync(ctx, "x", nil); err != nil {
+	if err := s.RecordSync(ctx, user, "x", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordSync(ctx, "x", context.DeadlineExceeded); err != nil {
+	if err := s.RecordSync(ctx, user, "x", context.DeadlineExceeded); err != nil {
 		t.Fatal(err)
 	}
-	run, err := s.GetSyncRun(ctx, "x")
+	run, err := s.GetSyncRun(ctx, user, "x")
 	if err != nil {
 		t.Fatal(err)
 	}

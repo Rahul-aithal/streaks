@@ -133,33 +133,38 @@ func idToken(claims string) string {
 
 func TestAuthCodeURL(t *testing.T) {
 	c := NewClient("id", "secret", "http://localhost:5173/api/oauth/google/callback")
-	u, err := url.Parse(c.AuthCodeURL("st"))
+	u, err := url.Parse(c.AuthCodeURL("st", false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	if q.Get("state") != "st" || q.Get("access_type") != "offline" ||
-		q.Get("redirect_uri") != c.RedirectURI || !strings.Contains(q.Get("prompt"), "consent") ||
-		!strings.Contains(q.Get("scope"), TasksScope) {
+	if q.Get("state") != "st" || q.Get("access_type") != "offline" || q.Get("prompt") != "select_account" ||
+		q.Get("redirect_uri") != c.RedirectURI || !strings.Contains(q.Get("scope"), TasksScope) {
 		t.Errorf("query = %v", q)
 	}
 	if strings.Contains(u.String(), "secret") {
 		t.Error("URL leaks the client secret")
 	}
+	forced, _ := url.Parse(c.AuthCodeURL("st", true))
+	if forced.Query().Get("prompt") != "select_account consent" {
+		t.Errorf("forced prompt = %q", forced.Query().Get("prompt"))
+	}
 }
 
 func TestExchangeCode(t *testing.T) {
-	good := idToken(`{"sub":"123","email":"a@example.com"}`)
+	good := idToken(`{"sub":"123","email":"a@example.com","email_verified":true,"name":"A","picture":"http://p"}`)
 	tests := []struct {
 		name, response string
 		wantErr        error
 		wantOtherErr   bool
+		wantRefresh    string
 	}{
-		{name: "ok", response: `{"refresh_token":"rt","scope":"openid ` + TasksScope + `","id_token":"` + good + `"}`},
+		{name: "new user", response: `{"refresh_token":"rt","scope":"openid ` + TasksScope + `","id_token":"` + good + `"}`, wantRefresh: "rt"},
+		{name: "returning user has no refresh token", response: `{"scope":"` + TasksScope + `","id_token":"` + good + `"}`},
 		{name: "tasks unticked", response: `{"refresh_token":"rt","scope":"openid email","id_token":"` + good + `"}`, wantErr: ErrMissingScope},
-		{name: "no refresh token", response: `{"scope":"` + TasksScope + `","id_token":"` + good + `"}`, wantErr: ErrNoRefreshToken},
-		{name: "bad ID token", response: `{"refresh_token":"rt","scope":"` + TasksScope + `","id_token":"nope"}`, wantOtherErr: true},
-		{name: "no sub", response: `{"refresh_token":"rt","scope":"` + TasksScope + `","id_token":"` + idToken(`{"email":"a"}`) + `"}`, wantOtherErr: true},
+		{name: "unverified email", response: `{"scope":"` + TasksScope + `","id_token":"` + idToken(`{"sub":"1","email":"a@example.com","email_verified":false}`) + `"}`, wantErr: ErrUnverifiedEmail},
+		{name: "bad ID token", response: `{"scope":"` + TasksScope + `","id_token":"nope"}`, wantOtherErr: true},
+		{name: "no sub", response: `{"scope":"` + TasksScope + `","id_token":"` + idToken(`{"email":"a"}`) + `"}`, wantOtherErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,7 +185,8 @@ func TestExchangeCode(t *testing.T) {
 					t.Error("want an error")
 				}
 			default:
-				if err != nil || got.Sub != "123" || got.Email != "a@example.com" || got.RefreshToken != "rt" {
+				if err != nil || got.Sub != "123" || got.Email != "a@example.com" || got.Name != "A" ||
+					got.AvatarURL != "http://p" || got.RefreshToken != tc.wantRefresh {
 					t.Errorf("got %+v, %v", got, err)
 				}
 			}

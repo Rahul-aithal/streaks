@@ -3,8 +3,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -20,22 +18,24 @@ import (
 )
 
 const (
-	secretHeader   = "X-Streaks-Secret"
 	backdateWindow = 2 // Days a manual check-in can reach back.
 	maxHistoryDays = 800
 )
 
 // Server holds the API's dependencies.
 type Server struct {
-	Store  *store.Store
-	Sync   *syncer.Syncer
-	Secret string
-	Now    func() time.Time
+	Store *store.Store
+	Sync  *syncer.Syncer
+	Now   func() time.Time
+
+	AllowedEmails []string // Lowercase. Only these Google accounts may sign in.
+	WebOrigin     string   // Browser origin allowed to make state-changing requests.
+	SecureCookies bool
 
 	oauthStates *stateStore
 }
 
-// Handler returns the routes behind the shared-secret check.
+// Handler returns the public login routes and the session-protected API.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /habits", s.listHabits)
@@ -52,9 +52,13 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /sync/github", s.syncNow(syncer.KindGitHub))
 	api.HandleFunc("POST /sync/google-tasks", s.syncNow(syncer.KindGoogle))
 	api.HandleFunc("GET /summary/today", s.summaryToday)
-	api.HandleFunc("GET /google-accounts", s.listGoogleAccounts)
-	api.HandleFunc("POST /google-accounts/connect", s.connectGoogle)
-	api.HandleFunc("DELETE /google-accounts/{id}", s.disconnectGoogle)
+	api.HandleFunc("GET /auth/me", s.me)
+	api.HandleFunc("POST /auth/switch", s.switchAccount)
+	api.HandleFunc("POST /auth/sign-out", s.signOut)
+	api.HandleFunc("POST /auth/sign-out-all", s.signOutAll)
+	api.HandleFunc("DELETE /account", s.deleteAccount)
+	api.HandleFunc("PUT /settings/github", s.linkGitHub)
+	api.HandleFunc("DELETE /settings/github", s.unlinkGitHub)
 
 	s.oauthStates = newStateStore(s.Now)
 
@@ -62,24 +66,11 @@ func (s *Server) Handler() http.Handler {
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}) // No DB call: must not wake Neon.
 	})
-	// Google's redirect can't carry the secret header. The one-time state value,
-	// issued only to secret holders, protects this route instead.
+	// Public: these create the session. The state value and cookie protect the callback.
+	root.HandleFunc("GET /auth/google/start", s.startGoogleLogin)
 	root.HandleFunc("GET /oauth/google/callback", s.googleCallback)
-	root.Handle("/", s.requireSecret(api))
-	return root
-}
-
-func (s *Server) requireSecret(next http.Handler) http.Handler {
-	// Hashing makes the comparison constant-time regardless of input length.
-	want := sha256.Sum256([]byte(s.Secret))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := sha256.Sum256([]byte(r.Header.Get(secretHeader)))
-		if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
-			writeError(w, http.StatusUnauthorized, "missing or invalid secret")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	root.Handle("/", s.requireSession(api))
+	return s.checkOrigin(root)
 }
 
 func (s *Server) today() streak.Day { return streak.DayOf(s.Now()) }
@@ -131,7 +122,7 @@ func targetMask(schedules []streak.Schedule) uint8 {
 }
 
 func (s *Server) listHabits(w http.ResponseWriter, r *http.Request) {
-	habits, err := s.Store.ListHabits(r.Context())
+	habits, err := s.Store.ListHabits(r.Context(), userID(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -172,12 +163,12 @@ func (s *Server) createHabit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	today := s.today()
-	id, err := s.Store.CreateHabit(r.Context(), name, req.Source, streak.MaskFromDays(req.TargetDays), today)
+	id, err := s.Store.CreateHabit(r.Context(), userID(r), name, req.Source, streak.MaskFromDays(req.TargetDays), today)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	h, err := s.Store.GetHabit(r.Context(), id)
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -190,11 +181,11 @@ func (s *Server) getHabit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
-func (s *Server) respondHabit(w http.ResponseWriter, ctx context.Context, id int64) {
-	h, err := s.Store.GetHabit(ctx, id)
+func (s *Server) respondHabit(w http.ResponseWriter, r *http.Request, id int64) {
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -233,7 +224,7 @@ func (s *Server) updateHabit(w http.ResponseWriter, r *http.Request) {
 		m := streak.MaskFromDays(*req.TargetDays)
 		mask = &m
 	}
-	existing, err := s.Store.GetHabit(r.Context(), id)
+	existing, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -242,11 +233,11 @@ func (s *Server) updateHabit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "unarchive the habit before changing its target days")
 		return
 	}
-	if err := s.Store.UpdateHabit(r.Context(), id, req.Name, mask, s.today()); err != nil {
+	if err := s.Store.UpdateHabit(r.Context(), userID(r), id, req.Name, mask, s.today()); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
 func (s *Server) deleteHabit(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +245,7 @@ func (s *Server) deleteHabit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.Store.DeleteHabit(r.Context(), id); err != nil {
+	if err := s.Store.DeleteHabit(r.Context(), userID(r), id); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -266,18 +257,18 @@ func (s *Server) archiveHabit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h, err := s.Store.GetHabit(r.Context(), id)
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if h.ArchivedAt == nil { // Archiving twice must not add another schedule row.
-		if err := s.Store.ArchiveHabit(r.Context(), id, s.today()); err != nil {
+		if err := s.Store.ArchiveHabit(r.Context(), userID(r), id, s.today()); err != nil {
 			writeStoreError(w, err)
 			return
 		}
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
 func (s *Server) unarchiveHabit(w http.ResponseWriter, r *http.Request) {
@@ -285,18 +276,18 @@ func (s *Server) unarchiveHabit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h, err := s.Store.GetHabit(r.Context(), id)
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if h.ArchivedAt != nil {
-		if err := s.Store.UnarchiveHabit(r.Context(), id, s.today()); err != nil {
+		if err := s.Store.UnarchiveHabit(r.Context(), userID(r), id, s.today()); err != nil {
 			writeStoreError(w, err)
 			return
 		}
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
 // --- Check-ins ---
@@ -326,7 +317,7 @@ func (s *Server) checkInTarget(w http.ResponseWriter, r *http.Request) (int64, s
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return 0, 0, false
 	}
-	h, err := s.Store.GetHabit(r.Context(), id)
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return 0, 0, false
@@ -347,11 +338,11 @@ func (s *Server) putCheckIn(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.Store.PutCheckIn(r.Context(), id, day); err != nil {
+	if err := s.Store.PutCheckIn(r.Context(), userID(r), id, day); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
 func (s *Server) deleteCheckIn(w http.ResponseWriter, r *http.Request) {
@@ -359,11 +350,11 @@ func (s *Server) deleteCheckIn(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.Store.DeleteCheckIn(r.Context(), id, day); err != nil {
+	if err := s.Store.DeleteCheckIn(r.Context(), userID(r), id, day); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	s.respondHabit(w, r.Context(), id)
+	s.respondHabit(w, r, id)
 }
 
 // --- History and streaks ---
@@ -386,14 +377,14 @@ func (s *Server) habitHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h, err := s.Store.GetHabit(r.Context(), id)
+	h, err := s.Store.GetHabit(r.Context(), userID(r), id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	var counts map[streak.Day]int
 	if h.Source == "github" {
-		if counts, err = s.Store.ContributionCounts(r.Context(), from, to); err != nil {
+		if counts, err = s.Store.ContributionCounts(r.Context(), userID(r), from, to); err != nil {
 			writeStoreError(w, err)
 			return
 		}
@@ -441,7 +432,7 @@ func dailyInputs(habits []store.Habit) []streak.Habit {
 }
 
 func (s *Server) dailyStreak(w http.ResponseWriter, r *http.Request) {
-	habits, err := s.Store.ListHabits(r.Context())
+	habits, err := s.Store.ListHabits(r.Context(), userID(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -453,15 +444,15 @@ func (s *Server) dailyStreak(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) syncNow(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := s.Sync.Sync(r.Context(), kind)
+		err := s.Sync.Sync(r.Context(), userID(r), kind)
 		switch {
 		case errors.Is(err, syncer.ErrNotConfigured):
-			writeError(w, http.StatusServiceUnavailable, "credentials for this sync are not set")
+			writeError(w, http.StatusConflict, "Link your GitHub account in Settings first")
 		case err != nil:
-			slog.Error("manual sync failed", "kind", kind, "err", err)
+			slog.Error("manual sync failed", "kind", kind, "user", userID(r), "err", err)
 			writeError(w, http.StatusBadGateway, err.Error())
 		default:
-			run, err := s.Store.GetSyncRun(r.Context(), kind)
+			run, err := s.Store.GetSyncRun(r.Context(), userID(r), kind)
 			if err != nil {
 				writeStoreError(w, err)
 				return
@@ -473,6 +464,28 @@ func (s *Server) syncNow(kind string) http.HandlerFunc {
 
 // --- Summary ---
 
+type recentDay struct {
+	Day   streak.Day `json:"day"`
+	State string     `json:"state"` // "done", "bonus", "missed", "pending" or "rest".
+}
+
+const summaryRecentDays = 7
+
+func dayState(t *streak.Tracker, d, today streak.Day) string {
+	scheduled, done := t.Scheduled(d), t.Done(d)
+	switch {
+	case done && scheduled:
+		return "done"
+	case done:
+		return "bonus"
+	case !scheduled:
+		return "rest"
+	case d < today:
+		return "missed"
+	}
+	return "pending"
+}
+
 type summaryHabit struct {
 	ID            int64         `json:"id"`
 	Name          string        `json:"name"`
@@ -480,11 +493,11 @@ type summaryHabit struct {
 	Status        string        `json:"status"` // "done", "pending", or "rest" on a non-target day.
 	Contributions *int          `json:"contributions,omitempty"`
 	Streak        streak.Result `json:"streak"`
+	Recent        []recentDay   `json:"recent"`
 }
 
 type summaryTask struct {
 	ID          string      `json:"id"`
-	Account     string      `json:"account"`
 	Title       string      `json:"title"`
 	Status      string      `json:"status"`
 	Due         *streak.Day `json:"due"`
@@ -494,35 +507,31 @@ type summaryTask struct {
 
 func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	sess := sessionFrom(r)
+	id := sess.user.ID
 	today := s.today()
 
-	habits, err := s.Store.ListHabits(ctx)
+	habits, err := s.Store.ListHabits(ctx, id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	cached, err := s.Store.ListTasks(ctx)
+	cached, err := s.Store.ListTasks(ctx, id)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	counts, err := s.Store.ContributionCounts(ctx, today, today)
+	counts, err := s.Store.ContributionCounts(ctx, id, today, today)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	googleRun, err := s.Store.GetSyncRun(ctx, syncer.KindGoogle)
+	googleRun, err := s.Store.GetSyncRun(ctx, id, syncer.KindGoogle)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	githubRun, err := s.Store.GetSyncRun(ctx, syncer.KindGitHub)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-
-	accounts, err := s.Store.ListGoogleAccounts(ctx)
+	githubRun, err := s.Store.GetSyncRun(ctx, id, syncer.KindGitHub)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -535,6 +544,9 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		}
 		tracker := streak.NewTracker(streakInput(h), today)
 		item := summaryHabit{ID: h.ID, Name: h.Name, Source: h.Source, Streak: streak.Compute(streakInput(h), today)}
+		for d := today - summaryRecentDays + 1; d <= today; d++ {
+			item.Recent = append(item.Recent, recentDay{Day: d, State: dayState(tracker, d, today)})
+		}
 		switch {
 		case tracker.Done(today):
 			item.Status = "done"
@@ -554,7 +566,7 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 	taskItems := make([]summaryTask, 0, len(todayTasks))
 	for _, t := range todayTasks {
 		taskItems = append(taskItems, summaryTask{
-			ID: t.GoogleID, Account: t.AccountEmail, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
+			ID: t.GoogleID, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
 			Overdue: t.Status != "completed" && t.Due != nil && *t.Due < today,
 		})
 	}
@@ -563,17 +575,21 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		"date":   today,
 		"habits": items,
 		"tasks": map[string]any{
-			"total":     snap.Total,
-			"completed": snap.Completed,
-			"overdue":   snap.Overdue,
-			"items":     taskItems,
-			"sync":      googleRun,
-			"accounts":  toAccountsJSON(accounts),
+			"total":           snap.Total,
+			"completed":       snap.Completed,
+			"overdue":         snap.Overdue,
+			"items":           taskItems,
+			"sync":            googleRun,
+			"needs_reconnect": sess.user.NeedsReconnect,
 		},
 		"streaks": map[string]any{
 			"daily": streak.ComputeDaily(dailyInputs(habits), today),
 		},
-		"github": map[string]any{"contributions": counts[today], "sync": githubRun},
+		"github": map[string]any{
+			"linked":        sess.user.GitHubLogin != nil,
+			"contributions": counts[today],
+			"sync":          githubRun,
+		},
 	})
 }
 

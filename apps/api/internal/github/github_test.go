@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,9 +28,8 @@ func TestFetchActivityFiltersEvents(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient("me", "tok")
-	c.BaseURL = srv.URL
-	got, err := c.FetchActivity(context.Background())
+	c := NewClient(srv.URL, "tok")
+	got, err := c.FetchActivity(context.Background(), "me")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,9 +55,8 @@ func TestFetchActivityPagination(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient("me", "tok")
-	c.BaseURL = srv.URL
-	got, err := c.FetchActivity(context.Background())
+	c := NewClient(srv.URL, "tok")
+	got, err := c.FetchActivity(context.Background(), "me")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +71,26 @@ func TestFetchActivityReportsFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient("me", "tok")
-	c.BaseURL = srv.URL
-	if _, err := c.FetchActivity(context.Background()); err == nil || !strings.Contains(err.Error(), "401") {
+	c := NewClient(srv.URL, "tok")
+	if _, err := c.FetchActivity(context.Background(), "me"); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("err = %v, want a 401 error", err)
+	}
+}
+
+func TestLogin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"login":"octocat"}`)
+	}))
+	defer srv.Close()
+
+	if got, err := NewClient(srv.URL, "good").Login(context.Background()); err != nil || got != "octocat" {
+		t.Errorf("Login = %q, %v", got, err)
+	}
+	if _, err := NewClient(srv.URL, "bad").Login(context.Background()); !errors.Is(err, ErrBadToken) {
+		t.Errorf("err = %v, want ErrBadToken", err)
 	}
 }

@@ -3,9 +3,12 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"streaks/internal/streak"
+	"streaks/internal/syncer"
 )
 
 func TestValidateCheckInDay(t *testing.T) {
@@ -23,32 +26,50 @@ func TestValidateCheckInDay(t *testing.T) {
 	}
 }
 
-func TestSecretRequired(t *testing.T) {
-	h := (&Server{Secret: "s3cret"}).Handler()
-	next := func(path, secret string) int {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		if secret != "" {
-			req.Header.Set(secretHeader, secret)
-		}
+func TestSessionRequired(t *testing.T) {
+	h := (&Server{Now: time.Now, WebOrigin: "http://web"}).Handler()
+	for _, path := range []string{"/habits", "/summary/today", "/auth/me", "/streaks/daily"} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec.Code
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without a session: %d", path, rec.Code)
+		}
 	}
-	if code := next("/habits", ""); code != http.StatusUnauthorized {
-		t.Errorf("no secret: %d", code)
-	}
-	if code := next("/habits", "wrong"); code != http.StatusUnauthorized {
-		t.Errorf("wrong secret: %d", code)
-	}
-	// Correct secret gets past auth: an empty body then fails validation.
-	if code := next("/habits", "s3cret"); code != http.StatusBadRequest {
-		t.Errorf("correct secret: %d", code)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("healthz: %d", rec.Code)
+	}
+}
+
+func TestCrossOriginWritesRefused(t *testing.T) {
+	h := (&Server{Now: time.Now, WebOrigin: "http://web"}).Handler()
+	req := httptest.NewRequest(http.MethodPost, "/habits", nil)
+	req.Header.Set("Origin", "http://evil")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin POST: %d", rec.Code)
+	}
+}
+
+func TestDayState(t *testing.T) {
+	today, _ := streak.ParseDay("2026-11-04") // A Wednesday.
+	tracker := streak.NewTracker(streak.Habit{
+		Schedules: []streak.Schedule{{From: today - 10, Mask: streak.MaskFromDays([]int{1, 2, 3})}},
+		CheckIns:  []streak.Day{today - 2, today - 4},
+	}, today)
+	tests := map[streak.Day]string{
+		today:     "pending",
+		today - 1: "missed", // Tuesday.
+		today - 2: "done",   // Monday.
+		today - 3: "rest",   // Sunday.
+		today - 4: "bonus",  // Saturday, checked in.
+	}
+	for d, want := range tests {
+		if got := dayState(tracker, d, today); got != want {
+			t.Errorf("%s = %s, want %s", d, got, want)
+		}
 	}
 }
 
@@ -57,5 +78,49 @@ func TestTargetMaskIgnoresArchiveRows(t *testing.T) {
 	got := targetMask([]streak.Schedule{{From: 10, Mask: mask}, {From: 20, Mask: 0}})
 	if got != mask {
 		t.Errorf("targetMask = %b, want %b", got, mask)
+	}
+}
+
+func TestStateStore(t *testing.T) {
+	now := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
+	s := newStateStore(func() time.Time { return now })
+
+	state, err := s.issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.consume("unknown") || s.consume("") {
+		t.Error("unknown state accepted")
+	}
+	if !s.consume(state) {
+		t.Error("valid state rejected")
+	}
+	if s.consume(state) {
+		t.Error("state accepted twice")
+	}
+
+	expired, _ := s.issue()
+	now = now.Add(stateLifetime + time.Second)
+	if s.consume(expired) {
+		t.Error("expired state accepted")
+	}
+}
+
+func TestCallbackRejectsMissingState(t *testing.T) {
+	srv := &Server{Sync: &syncer.Syncer{}, Now: time.Now}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=nope&code=c", nil))
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "error=expired") {
+		t.Errorf("code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestEmailAllowlist(t *testing.T) {
+	s := &Server{AllowedEmails: []string{"me@example.com"}}
+	if !s.emailAllowed("Me@Example.com") {
+		t.Error("allowed email refused")
+	}
+	if s.emailAllowed("other@example.com") || s.emailAllowed("") {
+		t.Error("other email accepted")
 	}
 }

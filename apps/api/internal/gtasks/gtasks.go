@@ -28,8 +28,8 @@ var ErrReconnect = errors.New("Google access expired or was revoked: reconnect t
 // ErrMissingScope means the user unticked Tasks access on Google's consent screen.
 var ErrMissingScope = errors.New("Google Tasks access was not granted")
 
-// ErrNoRefreshToken means Google didn't issue a long-lived token.
-var ErrNoRefreshToken = errors.New("Google returned no refresh token")
+// ErrUnverifiedEmail means Google hasn't verified the account's email address.
+var ErrUnverifiedEmail = errors.New("Google account email is not verified")
 
 // completedRetention limits how much old completed work is cached.
 const completedRetention = 7
@@ -60,26 +60,32 @@ func NewClient(clientID, clientSecret, redirectURI string) *Client {
 	}
 }
 
-// AuthCodeURL returns the page where the user picks an account and approves access.
-func (c *Client) AuthCodeURL(state string) string {
+// AuthCodeURL returns the page where the user picks an account. With forceConsent,
+// Google also shows the permissions again and issues a new refresh token, which
+// a returning user doesn't otherwise get or need.
+func (c *Client) AuthCodeURL(state string, forceConsent bool) string {
+	prompt := "select_account"
+	if forceConsent {
+		prompt = "select_account consent"
+	}
 	return c.AuthURL + "?" + url.Values{
 		"client_id":     {c.ClientID},
 		"redirect_uri":  {c.RedirectURI},
 		"response_type": {"code"},
-		"scope":         {"openid email " + TasksScope},
+		"scope":         {"openid email profile " + TasksScope},
 		"access_type":   {"offline"},
-		// select_account lets you add a second account while signed in to the
-		// first; consent makes Google issue a refresh token every time.
-		"prompt": {"select_account consent"},
-		"state":  {state},
+		"prompt":        {prompt}, // select_account allows adding a second account.
+		"state":         {state},
 	}.Encode()
 }
 
-// Identity is a newly connected account.
+// Identity is the account that just signed in.
 type Identity struct {
 	Sub          string
 	Email        string
-	RefreshToken string
+	Name         string
+	AvatarURL    string
+	RefreshToken string // Empty for a returning user unless consent was forced.
 }
 
 // ExchangeCode trades the code from the OAuth callback for the account's identity and token.
@@ -97,35 +103,40 @@ func (c *Client) ExchangeCode(ctx context.Context, code string) (Identity, error
 	if !slices.Contains(strings.Fields(tok.Scope), TasksScope) {
 		return Identity{}, ErrMissingScope
 	}
-	if tok.RefreshToken == "" {
-		return Identity{}, ErrNoRefreshToken
-	}
-	sub, email, err := parseIDToken(tok.IDToken)
+	identity, err := parseIDToken(tok.IDToken)
 	if err != nil {
 		return Identity{}, err
 	}
-	return Identity{Sub: sub, Email: email, RefreshToken: tok.RefreshToken}, nil
+	identity.RefreshToken = tok.RefreshToken
+	return identity, nil
 }
 
 // parseIDToken reads the claims of an ID token. Its signature needn't be checked
 // because the token came directly from Google over TLS, not through the browser.
-func parseIDToken(token string) (sub, email string, err error) {
+func parseIDToken(token string) (Identity, error) {
+	malformed := errors.New("google token: malformed ID token")
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", "", errors.New("google token: malformed ID token")
+		return Identity{}, malformed
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", "", errors.New("google token: malformed ID token")
+		return Identity{}, malformed
 	}
 	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
+		Sub           string `json:"sub"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
+		Name          string `json:"name"`
+		Picture       string `json:"picture"`
 	}
-	if err := json.Unmarshal(raw, &claims); err != nil || claims.Sub == "" {
-		return "", "", errors.New("google token: ID token has no account ID")
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.Sub == "" || claims.Email == "" {
+		return Identity{}, errors.New("google token: ID token has no account details")
 	}
-	return claims.Sub, claims.Email, nil
+	if !claims.EmailVerified {
+		return Identity{}, ErrUnverifiedEmail
+	}
+	return Identity{Sub: claims.Sub, Email: claims.Email, Name: claims.Name, AvatarURL: claims.Picture}, nil
 }
 
 // Revoke tells Google to invalidate a refresh token.
@@ -138,7 +149,7 @@ func (c *Client) Revoke(ctx context.Context, refreshToken string) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return errors.New("google revoke: request failed") // The URL error could quote nothing useful.
+		return errors.New("google revoke: request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

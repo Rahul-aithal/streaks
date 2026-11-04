@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,20 +19,55 @@ const (
 	maxPages = 3 // The API serves at most 300 events from the past 30 days.
 )
 
+// DefaultBaseURL is the public API.
+const DefaultBaseURL = "https://api.github.com"
+
+// ErrBadToken means GitHub rejected the token.
+var ErrBadToken = errors.New("GitHub rejected this token")
+
+// Client acts for one user with their personal access token.
 type Client struct {
-	Username string
-	Token    string
-	BaseURL  string // Defaults to the public API; overridden in tests.
-	HTTP     *http.Client
+	Token   string
+	BaseURL string
+	HTTP    *http.Client
 }
 
-func NewClient(username, token string) *Client {
-	return &Client{
-		Username: username,
-		Token:    token,
-		BaseURL:  "https://api.github.com",
-		HTTP:     &http.Client{Timeout: 20 * time.Second},
+func NewClient(baseURL, token string) *Client {
+	return &Client{Token: token, BaseURL: baseURL, HTTP: &http.Client{Timeout: 20 * time.Second}}
+}
+
+// Login returns the username the token belongs to, so nobody can link a token
+// to the wrong account by mistyping a name.
+func (c *Client) Login(ctx context.Context) (string, error) {
+	resp, err := c.do(ctx, c.BaseURL+"/user")
+	if err != nil {
+		return "", fmt.Errorf("github user: %w", err)
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return "", ErrBadToken
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github user: status %d", resp.StatusCode)
+	}
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil || user.Login == "" {
+		return "", errors.New("github user: unexpected response")
+	}
+	return user.Login, nil
+}
+
+func (c *Client) do(ctx context.Context, u string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return c.HTTP.Do(req)
 }
 
 type rawEvent struct {
@@ -56,10 +92,10 @@ func (e rawEvent) counts() bool {
 }
 
 // FetchActivity returns all counted events the API still retains.
-func (c *Client) FetchActivity(ctx context.Context) ([]store.GitHubEvent, error) {
+func (c *Client) FetchActivity(ctx context.Context, login string) ([]store.GitHubEvent, error) {
 	var out []store.GitHubEvent
 	for page := 1; page <= maxPages; page++ {
-		events, done, err := c.fetchPage(ctx, page)
+		events, done, err := c.fetchPage(ctx, login, page)
 		if err != nil {
 			return nil, err
 		}
@@ -75,17 +111,9 @@ func (c *Client) FetchActivity(ctx context.Context) ([]store.GitHubEvent, error)
 	return out, nil
 }
 
-func (c *Client) fetchPage(ctx context.Context, page int) (events []rawEvent, done bool, err error) {
-	u := fmt.Sprintf("%s/users/%s/events?per_page=%d&page=%d", c.BaseURL, url.PathEscape(c.Username), perPage, page)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := c.HTTP.Do(req)
+func (c *Client) fetchPage(ctx context.Context, login string, page int) (events []rawEvent, done bool, err error) {
+	u := fmt.Sprintf("%s/users/%s/events?per_page=%d&page=%d", c.BaseURL, url.PathEscape(login), perPage, page)
+	resp, err := c.do(ctx, u)
 	if err != nil {
 		return nil, false, fmt.Errorf("github events: %w", err)
 	}

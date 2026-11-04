@@ -26,3 +26,34 @@ func TestParseLine(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEmails(t *testing.T) {
+	got := parseEmails(" A@Example.com, b@example.com ,,")
+	if len(got) != 2 || got[0] != "a@example.com" || got[1] != "b@example.com" {
+		t.Errorf("parseEmails = %v", got)
+	}
+	if got := parseEmails(""); len(got) != 0 {
+		t.Errorf("empty list = %v", got)
+	}
+}
+
+func TestValidateServeRequiresAllowlist(t *testing.T) {
+	c := Config{DatabaseURL: "x", GoogleClientID: "x", GoogleClientSecret: "x", GoogleTokenKey: "x"}
+	if err := c.ValidateServe(); err == nil {
+		t.Error("an empty allowlist must not start the server")
+	}
+	c.AllowedEmails = []string{"a@example.com"}
+	if err := c.ValidateServe(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWebOrigin(t *testing.T) {
+	c := Config{GoogleRedirectURI: "http://localhost:5173/api/oauth/google/callback"}
+	if got := c.WebOrigin(); got != "http://localhost:5173" {
+		t.Errorf("WebOrigin = %q", got)
+	}
+	if c.SecureCookies() {
+		t.Error("http should not use secure cookies")
+	}
+}

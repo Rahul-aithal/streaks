@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -13,12 +14,11 @@ import (
 type Config struct {
 	DatabaseURL       string
 	DatabaseURLDirect string
-	APISecret         string
 	APIPort           string
 	SyncInterval      time.Duration
 
-	GitHubUsername string
-	GitHubToken    string
+	// Only these Google accounts may sign in. Lowercased.
+	AllowedEmails []string
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -26,12 +26,31 @@ type Config struct {
 	GoogleRedirectURI  string
 }
 
-// GitHubEnabled reports whether GitHub sync is configured.
-func (c Config) GitHubEnabled() bool { return c.GitHubUsername != "" && c.GitHubToken != "" }
+// SecureCookies reports whether the app is served over HTTPS.
+func (c Config) SecureCookies() bool { return strings.HasPrefix(c.GoogleRedirectURI, "https://") }
 
-// GoogleEnabled reports whether Google Tasks sync is configured.
-func (c Config) GoogleEnabled() bool {
-	return c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GoogleTokenKey != ""
+// WebOrigin is the origin the browser app is served from, taken from the redirect URI.
+func (c Config) WebOrigin() string {
+	u, err := url.Parse(c.GoogleRedirectURI)
+	if err != nil {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// ValidateServe reports the first setting the API can't run without.
+func (c Config) ValidateServe() error {
+	switch {
+	case c.DatabaseURL == "":
+		return errors.New("DATABASE_URL is required (copy .env.example to .env)")
+	case c.GoogleClientID == "" || c.GoogleClientSecret == "":
+		return errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required: sign-in uses Google")
+	case c.GoogleTokenKey == "":
+		return errors.New("GOOGLE_TOKEN_KEY is required: openssl rand -hex 32")
+	case len(c.AllowedEmails) == 0:
+		return errors.New("ALLOWED_EMAILS is required: list the Google accounts that may sign in")
+	}
+	return nil
 }
 
 // Load reads .env (real environment variables win) and returns the config.
@@ -44,10 +63,8 @@ func Load() (Config, error) {
 	c := Config{
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		DatabaseURLDirect:  os.Getenv("DATABASE_URL_DIRECT"),
-		APISecret:          os.Getenv("API_SECRET"),
 		APIPort:            envOr("API_PORT", "8080"),
-		GitHubUsername:     os.Getenv("GITHUB_USERNAME"),
-		GitHubToken:        os.Getenv("GITHUB_TOKEN"),
+		AllowedEmails:      parseEmails(os.Getenv("ALLOWED_EMAILS")),
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleTokenKey:     os.Getenv("GOOGLE_TOKEN_KEY"),
@@ -59,6 +76,16 @@ func Load() (Config, error) {
 	}
 	c.SyncInterval = interval
 	return c, nil
+}
+
+func parseEmails(list string) []string {
+	emails := []string{}
+	for _, e := range strings.Split(list, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			emails = append(emails, e)
+		}
+	}
+	return emails
 }
 
 func envOr(key, fallback string) string {

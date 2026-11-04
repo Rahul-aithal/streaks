@@ -60,11 +60,12 @@ func run(args []string) error {
 }
 
 func serve(cfg config.Config) error {
-	if cfg.DatabaseURL == "" {
-		return errors.New("DATABASE_URL is required (copy .env.example to .env)")
+	if err := cfg.ValidateServe(); err != nil {
+		return err
 	}
-	if cfg.APISecret == "" || cfg.APISecret == "change-me" {
-		return errors.New("set API_SECRET to a real value: openssl rand -hex 32")
+	box, err := secretbox.New(cfg.GoogleTokenKey)
+	if err != nil {
+		return fmt.Errorf("GOOGLE_TOKEN_KEY: %w", err)
 	}
 	// Soft cap that keeps the heap small. Set GOMEMLIMIT to override.
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -80,27 +81,26 @@ func serve(cfg config.Config) error {
 	}
 	defer st.Close()
 
-	sync := &syncer.Syncer{Store: st, Interval: cfg.SyncInterval, Now: time.Now}
-	if cfg.GitHubEnabled() {
-		sync.GitHub = github.NewClient(cfg.GitHubUsername, cfg.GitHubToken)
-	} else {
-		slog.Info("GitHub sync disabled: set GITHUB_USERNAME and GITHUB_TOKEN")
-	}
-	if cfg.GoogleEnabled() {
-		box, err := secretbox.New(cfg.GoogleTokenKey)
-		if err != nil {
-			return fmt.Errorf("GOOGLE_TOKEN_KEY: %w", err)
-		}
-		sync.Box = box
-		sync.Google = gtasks.NewClient(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURI)
-	} else {
-		slog.Info("Google Tasks disabled: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_TOKEN_KEY")
+	sync := &syncer.Syncer{
+		Store:         st,
+		Google:        gtasks.NewClient(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURI),
+		Box:           box,
+		GitHubBaseURL: github.DefaultBaseURL,
+		Interval:      cfg.SyncInterval,
+		Now:           time.Now,
 	}
 	go sync.Run(ctx)
 
-	api := &httpapi.Server{Store: st, Sync: sync, Secret: cfg.APISecret, Now: time.Now}
+	api := &httpapi.Server{
+		Store:         st,
+		Sync:          sync,
+		Now:           time.Now,
+		AllowedEmails: cfg.AllowedEmails,
+		WebOrigin:     cfg.WebOrigin(),
+		SecureCookies: cfg.SecureCookies(),
+	}
 	srv := &http.Server{
-		// Loopback only: this is a personal tool reached through the web dev server.
+		// Loopback only: it's reached through the web dev server.
 		Addr:              "127.0.0.1:" + cfg.APIPort,
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

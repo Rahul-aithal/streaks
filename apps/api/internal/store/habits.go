@@ -33,11 +33,11 @@ func scanHabit(row pgx.Row) (Habit, error) {
 	return h, err
 }
 
-// ListHabits returns every habit, archived included, with schedules and check-ins.
-func (s *Store) ListHabits(ctx context.Context) ([]Habit, error) {
+// ListHabits returns a user's habits, archived included, with schedules and check-ins.
+func (s *Store) ListHabits(ctx context.Context, userID int64) ([]Habit, error) {
 	var habits []Habit
 	err := s.run(ctx, func(ctx context.Context) error {
-		rows, err := s.pool.Query(ctx, `SELECT `+habitColumns+` FROM habits ORDER BY created_at, id`)
+		rows, err := s.pool.Query(ctx, `SELECT `+habitColumns+` FROM habits WHERE user_id = $1 ORDER BY created_at, id`, userID)
 		if err != nil {
 			return err
 		}
@@ -50,7 +50,8 @@ func (s *Store) ListHabits(ctx context.Context) ([]Habit, error) {
 			byID[habits[i].ID] = &habits[i]
 		}
 
-		rows, err = s.pool.Query(ctx, `SELECT habit_id, effective_from, days_mask FROM habit_schedules`)
+		rows, err = s.pool.Query(ctx, `SELECT sc.habit_id, sc.effective_from, sc.days_mask FROM habit_schedules sc
+			JOIN habits h ON h.id = sc.habit_id WHERE h.user_id = $1`, userID)
 		if err != nil {
 			return err
 		}
@@ -67,7 +68,8 @@ func (s *Store) ListHabits(ctx context.Context) ([]Habit, error) {
 			return err
 		}
 
-		rows, err = s.pool.Query(ctx, `SELECT habit_id, day FROM check_ins ORDER BY day`)
+		rows, err = s.pool.Query(ctx, `SELECT c.habit_id, c.day FROM check_ins c
+			JOIN habits h ON h.id = c.habit_id WHERE h.user_id = $1 ORDER BY c.day`, userID)
 		if err != nil {
 			return err
 		}
@@ -83,12 +85,12 @@ func (s *Store) ListHabits(ctx context.Context) ([]Habit, error) {
 	return habits, err
 }
 
-// GetHabit returns one habit with its schedules and check-ins.
-func (s *Store) GetHabit(ctx context.Context, id int64) (Habit, error) {
+// GetHabit returns one of a user's habits. Another user's habit is ErrNotFound.
+func (s *Store) GetHabit(ctx context.Context, userID, id int64) (Habit, error) {
 	var h Habit
 	err := s.run(ctx, func(ctx context.Context) error {
 		var err error
-		h, err = scanHabit(s.pool.QueryRow(ctx, `SELECT `+habitColumns+` FROM habits WHERE id = $1`, id))
+		h, err = scanHabit(s.pool.QueryRow(ctx, `SELECT `+habitColumns+` FROM habits WHERE id = $1 AND user_id = $2`, id, userID))
 		if err != nil {
 			return err
 		}
@@ -121,11 +123,11 @@ func (s *Store) GetHabit(ctx context.Context, id int64) (Habit, error) {
 // only duplicate if the commit succeeded but its acknowledgement was lost, and
 // a stray duplicate habit is easy to delete. A new GitHub habit immediately
 // picks up activity that has already been synced.
-func (s *Store) CreateHabit(ctx context.Context, name, source string, mask uint8, today streak.Day) (int64, error) {
+func (s *Store) CreateHabit(ctx context.Context, userID int64, name, source string, mask uint8, today streak.Day) (int64, error) {
 	var id int64
 	err := s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO habits (name, source) VALUES ($1, $2) RETURNING id`, name, source).Scan(&id); err != nil {
+			`INSERT INTO habits (user_id, name, source) VALUES ($1, $2, $3) RETURNING id`, userID, name, source).Scan(&id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
@@ -134,7 +136,7 @@ func (s *Store) CreateHabit(ctx context.Context, name, source string, mask uint8
 			return err
 		}
 		if source == "github" {
-			return applyGitHubCheckIns(ctx, tx)
+			return applyGitHubCheckIns(ctx, tx, userID)
 		}
 		return nil
 	})
@@ -143,10 +145,10 @@ func (s *Store) CreateHabit(ctx context.Context, name, source string, mask uint8
 
 // UpdateHabit changes the name and, when mask is non-nil, schedules the new
 // target days from today onward. Earlier days keep the schedule they had.
-func (s *Store) UpdateHabit(ctx context.Context, id int64, name *string, mask *uint8, today streak.Day) error {
+func (s *Store) UpdateHabit(ctx context.Context, userID, id int64, name *string, mask *uint8, today streak.Day) error {
 	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE habits SET name = COALESCE($2, name), updated_at = now() WHERE id = $1`, id, name)
+			`UPDATE habits SET name = COALESCE($3, name), updated_at = now() WHERE id = $1 AND user_id = $2`, id, userID, name)
 		if err != nil {
 			return err
 		}
@@ -174,9 +176,9 @@ func (s *Store) UpdateHabit(ctx context.Context, id int64, name *string, mask *u
 }
 
 // DeleteHabit removes a habit and, by cascade, its history.
-func (s *Store) DeleteHabit(ctx context.Context, id int64) error {
+func (s *Store) DeleteHabit(ctx context.Context, userID, id int64) error {
 	return s.run(ctx, func(ctx context.Context) error {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM habits WHERE id = $1`, id)
+		tag, err := s.pool.Exec(ctx, `DELETE FROM habits WHERE id = $1 AND user_id = $2`, id, userID)
 		if err == nil && tag.RowsAffected() == 0 {
 			return ErrNotFound
 		}
@@ -186,10 +188,10 @@ func (s *Store) DeleteHabit(ctx context.Context, id int64) error {
 
 // ArchiveHabit stops scheduling a habit. If today is already checked in, it
 // stops from tomorrow so today's check-in still counts.
-func (s *Store) ArchiveHabit(ctx context.Context, id int64, today streak.Day) error {
+func (s *Store) ArchiveHabit(ctx context.Context, userID, id int64, today streak.Day) error {
 	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE habits SET archived_at = COALESCE(archived_at, now()), updated_at = now()
-			WHERE id = $1`, id)
+			WHERE id = $1 AND user_id = $2`, id, userID)
 		if err != nil {
 			return err
 		}
@@ -213,9 +215,9 @@ func (s *Store) ArchiveHabit(ctx context.Context, id int64, today streak.Day) er
 }
 
 // UnarchiveHabit schedules the last non-archived target days from today onward.
-func (s *Store) UnarchiveHabit(ctx context.Context, id int64, today streak.Day) error {
+func (s *Store) UnarchiveHabit(ctx context.Context, userID, id int64, today streak.Day) error {
 	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE habits SET archived_at = NULL, updated_at = now() WHERE id = $1`, id)
+		tag, err := tx.Exec(ctx, `UPDATE habits SET archived_at = NULL, updated_at = now() WHERE id = $1 AND user_id = $2`, id, userID)
 		if err != nil {
 			return err
 		}
@@ -249,18 +251,20 @@ func (s *Store) UnarchiveHabit(ctx context.Context, id int64, today streak.Day) 
 }
 
 // PutCheckIn marks a day done. Repeating it changes nothing.
-func (s *Store) PutCheckIn(ctx context.Context, id int64, day streak.Day) error {
+func (s *Store) PutCheckIn(ctx context.Context, userID, id int64, day streak.Day) error {
 	return s.run(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `INSERT INTO check_ins (habit_id, day) VALUES ($1, $2::date)
-			ON CONFLICT (habit_id, day) DO NOTHING`, id, day)
+		_, err := s.pool.Exec(ctx, `INSERT INTO check_ins (habit_id, day)
+			SELECT id, $2::date FROM habits WHERE id = $1 AND user_id = $3
+			ON CONFLICT (habit_id, day) DO NOTHING`, id, day, userID)
 		return err
 	})
 }
 
 // DeleteCheckIn undoes a check-in. Repeating it changes nothing.
-func (s *Store) DeleteCheckIn(ctx context.Context, id int64, day streak.Day) error {
+func (s *Store) DeleteCheckIn(ctx context.Context, userID, id int64, day streak.Day) error {
 	return s.run(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `DELETE FROM check_ins WHERE habit_id = $1 AND day = $2::date`, id, day)
+		_, err := s.pool.Exec(ctx, `DELETE FROM check_ins c USING habits h
+			WHERE c.habit_id = h.id AND h.id = $1 AND c.day = $2::date AND h.user_id = $3`, id, day, userID)
 		return err
 	})
 }
