@@ -5,7 +5,7 @@ set -u
 
 ./bin/streaks serve &
 api=$!
-pnpm --filter web dev &
+(cd apps/web && exec ./node_modules/.bin/vite dev) &
 web=$!
 
 cleanup() {
