@@ -7,17 +7,15 @@ import { defineConfig, loadEnv } from "vite"
 const repoRoot = path.resolve(import.meta.dirname, "../..")
 
 export default defineConfig(({ mode }) => {
-  // One .env at the repo root is shared with the API.
+  // One .env at the repo root is shared with the API. Only API_PORT is read here,
+  // and it stays on the server side: nothing from .env reaches the browser.
   const env = loadEnv(mode, repoRoot, "")
   const apiPort = env.API_PORT || "8080"
 
   return {
     envDir: repoRoot,
+    envPrefix: "STREAKS_PUBLIC_",
     resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
-    define: {
-      // Ends up in the browser bundle: see "Security" in the README.
-      "import.meta.env.VITE_API_SECRET": JSON.stringify(env.API_SECRET ?? ""),
-    },
     server: {
       port: 5173,
       proxy: {

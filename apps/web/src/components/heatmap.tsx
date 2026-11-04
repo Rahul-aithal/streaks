@@ -1,28 +1,10 @@
+import { dayCellClass, DAY_LABEL } from "@/components/day-cell"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import type { HistoryDay } from "@/lib/api"
+import type { DayState, HistoryDay } from "@/lib/api"
 import { formatDay, formatLong, weekdayOf } from "@/lib/dates"
 import { cn } from "@/lib/utils"
 
-type CellState = "done" | "bonus" | "missed" | "pending" | "rest"
-
-// States differ by shape as well as colour, so they survive colour-blindness.
-const CELL: Record<CellState, string> = {
-  done: "bg-emerald-700",
-  bonus: "bg-emerald-200 ring-1 ring-inset ring-emerald-700",
-  missed: "bg-background ring-1 ring-inset ring-rose-500",
-  pending: "bg-background ring-2 ring-inset ring-foreground/50",
-  rest: "bg-muted",
-}
-
-const LABEL: Record<CellState, string> = {
-  done: "Done",
-  bonus: "Done on a non-target day",
-  missed: "Missed",
-  pending: "Not done yet",
-  rest: "Nothing scheduled",
-}
-
-const LEGEND: { state: CellState; label: string }[] = [
+const LEGEND: { state: DayState; label: string }[] = [
   { state: "done", label: "Done" },
   { state: "bonus", label: "Non-target day" },
   { state: "missed", label: "Missed" },
@@ -30,14 +12,10 @@ const LEGEND: { state: CellState; label: string }[] = [
   { state: "rest", label: "Nothing scheduled" },
 ]
 
-export function cellState(d: HistoryDay, today: string): CellState {
+export function cellState(d: HistoryDay, today: string): DayState {
   if (d.done) return d.scheduled ? "done" : "bonus"
   if (!d.scheduled) return "rest"
   return d.day < today ? "missed" : "pending"
-}
-
-export function stateLabel(state: CellState) {
-  return LABEL[state]
 }
 
 const CELL_SIZE = "size-3"
@@ -53,8 +31,7 @@ export function Heatmap({ days, today }: { days: HistoryDay[]; today: string }) 
   days.forEach((d, i) => {
     if (!d.day.endsWith("-01")) return
     const position = i + padding
-    const column = Math.ceil(position / 7) // The first week starting in this month.
-    months.push({ column, label: formatDay(d.day, { month: "short" }) })
+    months.push({ column: Math.ceil(position / 7), label: formatDay(d.day, { month: "short" }) })
   })
 
   return (
@@ -88,7 +65,7 @@ export function Heatmap({ days, today }: { days: HistoryDay[]; today: string }) 
       <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {LEGEND.map(({ state, label }) => (
           <li key={state} className="flex items-center gap-1.5">
-            <span className={cn(CELL_SIZE, "rounded-[3px]", CELL[state])} />
+            <span className={cn(CELL_SIZE, dayCellClass(state))} />
             {label}
           </li>
         ))}
@@ -97,16 +74,16 @@ export function Heatmap({ days, today }: { days: HistoryDay[]; today: string }) 
   )
 }
 
-function Cell({ day, state }: { day: HistoryDay; state: CellState }) {
+function Cell({ day, state }: { day: HistoryDay; state: DayState }) {
   const contributions =
     day.contributions === undefined
       ? ""
       : ` · ${day.contributions} ${day.contributions === 1 ? "contribution" : "contributions"}`
-  const text = `${formatLong(day.day)}: ${LABEL[state]}${contributions}`
+  const text = `${formatLong(day.day)}: ${DAY_LABEL[state]}${contributions}`
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={-1} aria-label={text} role="img" className={cn(CELL_SIZE, "rounded-[3px]", CELL[state])} />
+        <span tabIndex={-1} aria-label={text} role="img" className={cn(CELL_SIZE, dayCellClass(state))} />
       </TooltipTrigger>
       <TooltipContent>{text}</TooltipContent>
     </Tooltip>

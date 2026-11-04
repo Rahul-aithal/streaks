@@ -9,104 +9,152 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AccountsRouteImport } from './routes/accounts'
-import { Route as HabitsIndexRouteImport } from './routes/habits/index'
-import { Route as HabitsIdRouteImport } from './routes/habits/$id'
+import { Route as AppRouteImport } from './routes/_app'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppHabitsIndexRouteImport } from './routes/_app/habits/index'
+import { Route as AppHabitsIdRouteImport } from './routes/_app/habits/$id'
 
-const IndexRoute = IndexRouteImport.update({
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const AccountsRoute = AccountsRouteImport.update({
-  id: '/accounts',
-  path: '/accounts',
-  getParentRoute: () => rootRouteImport,
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
 } as any)
-const HabitsIndexRoute = HabitsIndexRouteImport.update({
+const AppHabitsIndexRoute = AppHabitsIndexRouteImport.update({
   id: '/habits/',
   path: '/habits/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
-const HabitsIdRoute = HabitsIdRouteImport.update({
+const AppHabitsIdRoute = AppHabitsIdRouteImport.update({
   id: '/habits/$id',
   path: '/habits/$id',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AppRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/accounts': typeof AccountsRoute
-  '/habits/$id': typeof HabitsIdRoute
-  '/habits/': typeof HabitsIndexRoute
+  '/': typeof AppIndexRoute
+  '/login': typeof LoginRoute
+  '/settings': typeof AppSettingsRoute
+  '/habits/$id': typeof AppHabitsIdRoute
+  '/habits/': typeof AppHabitsIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/accounts': typeof AccountsRoute
-  '/habits/$id': typeof HabitsIdRoute
-  '/habits': typeof HabitsIndexRoute
+  '/login': typeof LoginRoute
+  '/settings': typeof AppSettingsRoute
+  '/': typeof AppIndexRoute
+  '/habits/$id': typeof AppHabitsIdRoute
+  '/habits': typeof AppHabitsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/accounts': typeof AccountsRoute
-  '/habits/$id': typeof HabitsIdRoute
-  '/habits/': typeof HabitsIndexRoute
+  '/_app': typeof AppRouteWithChildren
+  '/login': typeof LoginRoute
+  '/_app/settings': typeof AppSettingsRoute
+  '/_app/': typeof AppIndexRoute
+  '/_app/habits/$id': typeof AppHabitsIdRoute
+  '/_app/habits/': typeof AppHabitsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/accounts' | '/habits/$id' | '/habits/'
+  fullPaths: '/' | '/login' | '/settings' | '/habits/$id' | '/habits/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/accounts' | '/habits/$id' | '/habits'
-  id: '__root__' | '/' | '/accounts' | '/habits/$id' | '/habits/'
+  to: '/login' | '/settings' | '/' | '/habits/$id' | '/habits'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/login'
+    | '/_app/settings'
+    | '/_app/'
+    | '/_app/habits/$id'
+    | '/_app/habits/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  AccountsRoute: typeof AccountsRoute
-  HabitsIdRoute: typeof HabitsIdRoute
-  HabitsIndexRoute: typeof HabitsIndexRoute
+  AppRoute: typeof AppRouteWithChildren
+  LoginRoute: typeof LoginRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_app/': {
+      id: '/_app/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/accounts': {
-      id: '/accounts'
-      path: '/accounts'
-      fullPath: '/accounts'
-      preLoaderRoute: typeof AccountsRouteImport
-      parentRoute: typeof rootRouteImport
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/habits/': {
-      id: '/habits/'
+    '/_app/habits/': {
+      id: '/_app/habits/'
       path: '/habits'
       fullPath: '/habits/'
-      preLoaderRoute: typeof HabitsIndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppHabitsIndexRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/habits/$id': {
-      id: '/habits/$id'
+    '/_app/habits/$id': {
+      id: '/_app/habits/$id'
       path: '/habits/$id'
       fullPath: '/habits/$id'
-      preLoaderRoute: typeof HabitsIdRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AppHabitsIdRouteImport
+      parentRoute: typeof AppRoute
     }
   }
 }
 
+interface AppRouteChildren {
+  AppSettingsRoute: typeof AppSettingsRoute
+  AppIndexRoute: typeof AppIndexRoute
+  AppHabitsIdRoute: typeof AppHabitsIdRoute
+  AppHabitsIndexRoute: typeof AppHabitsIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppSettingsRoute: AppSettingsRoute,
+  AppIndexRoute: AppIndexRoute,
+  AppHabitsIdRoute: AppHabitsIdRoute,
+  AppHabitsIndexRoute: AppHabitsIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  AccountsRoute: AccountsRoute,
-  HabitsIdRoute: HabitsIdRoute,
-  HabitsIndexRoute: HabitsIndexRoute,
+  AppRoute: AppRouteWithChildren,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

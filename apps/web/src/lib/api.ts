@@ -1,6 +1,8 @@
-// Typed client for the Go API. Requests go through the Vite proxy at /api.
+// Typed client for the Go API. Requests go through the Vite proxy at /api, and the
+// HttpOnly session cookie goes with them automatically.
 
 export type Source = "manual" | "github"
+export type DayState = "done" | "bonus" | "missed" | "pending" | "rest"
 
 export interface StreakResult {
   current: number
@@ -37,6 +39,20 @@ export interface SyncRun {
   last_error: string | null
 }
 
+export interface Account {
+  id: number
+  email: string
+  name: string
+  avatar_url: string
+  active: boolean
+}
+
+export interface Me {
+  accounts: Account[]
+  google: { needs_reconnect: boolean; sync: SyncRun }
+  github: { login: string | null; sync: SyncRun }
+}
+
 export interface SummaryHabit {
   id: number
   name: string
@@ -44,25 +60,11 @@ export interface SummaryHabit {
   status: "done" | "pending" | "rest"
   contributions?: number
   streak: StreakResult
-}
-
-export interface GoogleAccount {
-  id: number
-  email: string
-  last_success_at: string | null
-  last_error: string | null
-  needs_reconnect: boolean
-  created_at: string
-}
-
-export interface GoogleAccounts {
-  configured: boolean
-  accounts: GoogleAccount[]
+  recent: { day: string; state: DayState }[]
 }
 
 export interface SummaryTask {
   id: string
-  account: string
   title: string
   status: string
   due: string | null
@@ -79,10 +81,10 @@ export interface Summary {
     overdue: number
     items: SummaryTask[]
     sync: SyncRun
-    accounts: GoogleAccount[]
+    needs_reconnect: boolean
   }
   streaks: { daily: StreakResult }
-  github: { contributions: number; sync: SyncRun }
+  github: { linked: boolean; contributions: number; sync: SyncRun }
 }
 
 export interface HabitInput {
@@ -103,10 +105,7 @@ export class ApiError extends Error {
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
-    headers: {
-      "X-Streaks-Secret": import.meta.env.VITE_API_SECRET as string,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 204) return undefined as T
@@ -122,7 +121,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T
 }
 
+export const GOOGLE_SIGN_IN_URL = "/api/auth/google/start"
+export const GOOGLE_RECONNECT_URL = "/api/auth/google/start?consent=1"
+export const GITHUB_TOKEN_URL = "https://github.com/settings/personal-access-tokens/new"
+
 export const api = {
+  me: () => request<Me>("GET", "/auth/me"),
+  switchAccount: (userId: number) => request<void>("POST", "/auth/switch", { user_id: userId }),
+  signOut: () => request<{ signed_in: boolean }>("POST", "/auth/sign-out"),
+  signOutAll: () => request<void>("POST", "/auth/sign-out-all"),
+  deleteAccount: () => request<{ signed_in: boolean }>("DELETE", "/account"),
+  linkGitHub: (token: string) => request<{ login: string }>("PUT", "/settings/github", { token }),
+  unlinkGitHub: () => request<void>("DELETE", "/settings/github"),
+
   summary: () => request<Summary>("GET", "/summary/today"),
   habits: () => request<Habit[]>("GET", "/habits"),
   history: (id: number) => request<HabitHistory>("GET", `/habits/${id}/history`),
@@ -137,7 +148,4 @@ export const api = {
     request<Habit>("DELETE", `/habits/${id}/check-ins/${day}`),
   syncGitHub: () => request<SyncRun>("POST", "/sync/github"),
   syncGoogleTasks: () => request<SyncRun>("POST", "/sync/google-tasks"),
-  googleAccounts: () => request<GoogleAccounts>("GET", "/google-accounts"),
-  connectGoogle: () => request<{ url: string }>("POST", "/google-accounts/connect"),
-  disconnectGoogle: (id: number) => request<void>("DELETE", `/google-accounts/${id}`),
 }

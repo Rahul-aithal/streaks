@@ -1,15 +1,10 @@
 /// <reference types="vite/client" />
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import {
-  createRootRouteWithContext,
-  HeadContent,
-  Link,
-  Outlet,
-  Scripts,
-} from "@tanstack/react-router"
+import { createRootRouteWithContext, HeadContent, Link, Outlet, Scripts } from "@tanstack/react-router"
 import type { ReactNode } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { THEME_SCRIPT } from "@/lib/theme"
 import styles from "@/styles.css?url"
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -26,16 +21,25 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   }),
   shellComponent: Document,
   component: App,
-  notFoundComponent: () => <p className="text-muted-foreground">Page not found.</p>,
+  notFoundComponent: () => (
+    <div className="flex min-h-svh flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+      <p>Page not found.</p>
+      <Link to="/" className="underline">
+        Go to Today
+      </Link>
+    </div>
+  ),
 })
 
 function Document({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className="bg-background" suppressHydrationWarning>
       <head>
+        {/* biome-ignore lint: a static string defined in this repo. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         <HeadContent />
       </head>
-      <body>
+      <body className="bg-muted/30 antialiased">
         {children}
         <Scripts />
       </body>
@@ -43,35 +47,12 @@ function Document({ children }: { children: ReactNode }) {
   )
 }
 
-const navLink = "text-sm text-muted-foreground hover:text-foreground"
-const navLinkActive = { className: "font-medium !text-foreground" }
-
 function App() {
   const { queryClient } = Route.useRouteContext()
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={100}>
-        <div className="mx-auto flex min-h-svh max-w-3xl flex-col gap-6 px-4 py-6">
-          <header className="flex items-center gap-6">
-            <Link to="/" className="font-semibold">
-              Streaks
-            </Link>
-            <nav className="flex gap-4">
-              <Link to="/" className={navLink} activeProps={navLinkActive} activeOptions={{ exact: true }}>
-                Today
-              </Link>
-              <Link to="/habits" className={navLink} activeProps={navLinkActive}>
-                Habits
-              </Link>
-              <Link to="/accounts" className={navLink} activeProps={navLinkActive}>
-                Accounts
-              </Link>
-            </nav>
-          </header>
-          <main className="flex flex-col gap-6">
-            <Outlet />
-          </main>
-        </div>
+        <Outlet />
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

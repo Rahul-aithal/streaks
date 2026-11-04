@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Check } from "lucide-react"
+import { ArrowLeft, Check, GitBranch } from "lucide-react"
 import { ConfirmButton } from "@/components/confirm-button"
+import { DAY_LABEL } from "@/components/day-cell"
 import { HabitFormDialog } from "@/components/habit-form-dialog"
-import { cellState, Heatmap, stateLabel } from "@/components/heatmap"
+import { cellState, Heatmap } from "@/components/heatmap"
 import { QueryError } from "@/components/query-error"
 import { StreakStats } from "@/components/streak-stats"
 import { Badge } from "@/components/ui/badge"
@@ -14,7 +15,7 @@ import { api, type Habit, type HistoryDay } from "@/lib/api"
 import { describeTargets, formatLong } from "@/lib/dates"
 import { useApiMutation } from "@/lib/use-api-mutation"
 
-export const Route = createFileRoute("/habits/$id")({ component: HabitPage })
+export const Route = createFileRoute("/_app/habits/$id")({ component: HabitPage })
 
 const RECENT_DAYS = 7
 const BACKDATE_DAYS = 3 // Today plus the 2 days the API allows.
@@ -31,11 +32,7 @@ function HabitPage() {
   return (
     <>
       <Header habit={habit} />
-      <Card>
-        <CardContent>
-          <StreakStats streak={habit.streak} />
-        </CardContent>
-      </Card>
+      <StreakStats streak={habit.streak} />
       <Card>
         <CardHeader>
           <CardTitle>History</CardTitle>
@@ -79,54 +76,62 @@ function Header({ habit }: { habit: Habit }) {
   )
 
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <Link to="/habits" className="text-xs text-muted-foreground hover:underline">
-          ← Habits
-        </Link>
-        <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
-          <span className="break-words">{habit.name}</span>
-          {habit.source === "github" && <Badge variant="secondary">GitHub</Badge>}
-          {habit.archived && <Badge variant="outline">Archived</Badge>}
-        </h1>
-        <p className="text-sm text-muted-foreground">{describeTargets(habit.target_days)}</p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {!habit.archived && (
-          <HabitFormDialog
-            habit={habit}
-            trigger={
-              <Button variant="outline" size="sm">
-                Edit
-              </Button>
-            }
-          />
-        )}
-        {habit.archived ? (
-          <Button variant="outline" size="sm" disabled={unarchive.isPending} onClick={() => unarchive.mutate(undefined)}>
-            Unarchive
-          </Button>
-        ) : (
+    <div className="flex flex-col gap-2">
+      <Link to="/habits" className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="size-4" />
+        Habits
+      </Link>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight">
+            <span className="break-words">{habit.name}</span>
+            {habit.source === "github" && (
+              <Badge variant="secondary">
+                <GitBranch />
+                GitHub
+              </Badge>
+            )}
+            {habit.archived && <Badge variant="outline">Archived</Badge>}
+          </h1>
+          <p className="text-sm text-muted-foreground">{describeTargets(habit.target_days)}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {!habit.archived && (
+            <HabitFormDialog
+              habit={habit}
+              trigger={
+                <Button variant="outline" size="sm">
+                  Edit
+                </Button>
+              }
+            />
+          )}
+          {habit.archived ? (
+            <Button variant="outline" size="sm" disabled={unarchive.isPending} onClick={() => unarchive.mutate(undefined)}>
+              Unarchive
+            </Button>
+          ) : (
+            <ConfirmButton
+              title={`Archive "${habit.name}"?`}
+              description="It stops being scheduled and leaves the Today view. Its history is kept, and you can unarchive it later."
+              confirmLabel="Archive"
+              disabled={archive.isPending}
+              onConfirm={() => archive.mutate(undefined)}
+            >
+              Archive
+            </ConfirmButton>
+          )}
           <ConfirmButton
-            title={`Archive "${habit.name}"?`}
-            description="It stops being scheduled and leaves the Today view. Its history is kept, and you can unarchive it later."
-            confirmLabel="Archive"
-            disabled={archive.isPending}
-            onConfirm={() => archive.mutate(undefined)}
+            title={`Delete "${habit.name}"?`}
+            description="This permanently removes the habit and all its check-ins, and can change your daily streak. Archive it instead to keep the history."
+            confirmLabel="Delete"
+            variant="destructive"
+            disabled={remove.isPending}
+            onConfirm={() => remove.mutate(undefined)}
           >
-            Archive
+            Delete
           </ConfirmButton>
-        )}
-        <ConfirmButton
-          title={`Delete "${habit.name}"?`}
-          description="This permanently removes the habit and all its check-ins, and can change your daily completion streak. Archive it instead to keep the history."
-          confirmLabel="Delete"
-          variant="destructive"
-          disabled={remove.isPending}
-          onConfirm={() => remove.mutate(undefined)}
-        >
-          Delete
-        </ConfirmButton>
+        </div>
       </div>
     </div>
   )
@@ -167,7 +172,7 @@ function RecentDay({
             {day.done ? "Done" : "Check in"}
           </Button>
         ) : (
-          <span>{stateLabel(cellState(day, today))}</span>
+          <span>{DAY_LABEL[cellState(day, today)]}</span>
         )}
       </span>
     </li>
