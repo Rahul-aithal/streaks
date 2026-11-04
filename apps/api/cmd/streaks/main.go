@@ -89,6 +89,9 @@ func serve(cfg config.Config) error {
 		Interval:      cfg.SyncInterval,
 		Now:           time.Now,
 	}
+	if cfg.GitHubClientID != "" {
+		sync.GitHubOAuth = github.NewOAuth(cfg.GitHubClientID, cfg.GitHubClientSecret, cfg.GitHubRedirectURI)
+	}
 	go sync.Run(ctx)
 
 	api := &httpapi.Server{

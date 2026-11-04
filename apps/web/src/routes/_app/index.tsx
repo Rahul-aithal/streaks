@@ -128,7 +128,7 @@ function HabitsCard({ summary, className }: { summary: Summary; className?: stri
         {hasGitHubHabit && !summary.github.linked && (
           <p className="text-sm text-muted-foreground">
             <Link to="/settings" className="underline">
-              Link your GitHub account
+              Connect your GitHub account
             </Link>{" "}
             so GitHub habits complete automatically.
           </p>

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"streaks/internal/github"
 	"streaks/internal/gtasks"
 	"streaks/internal/secretbox"
 	"streaks/internal/store"
@@ -32,6 +33,7 @@ type fakeServices struct {
 	dead      map[string]bool // Google refresh tokens now rejected.
 	noRefresh map[string]bool // Codes that return no refresh token, like a returning user.
 	noScope   map[string]bool // Codes where the user unticked Tasks.
+	ghIssued  int             // GitHub tokens handed out.
 }
 
 func (f *fakeServices) server() *httptest.Server {
@@ -79,6 +81,33 @@ func (f *fakeServices) server() *httptest.Server {
 		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer at-")
 		// All users deliberately share a task ID.
 		fmt.Fprintf(w, `{"items":[{"id":"t1","title":"%s task","status":"needsAction","due":"2026-11-04T00:00:00.000Z"}]}`, who)
+	})
+	mux.HandleFunc("POST /login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		who, ok := strings.CutPrefix(r.Form.Get("code"), "ghcode-")
+		if !ok || r.Form.Get("client_secret") != "gh-secret" {
+			fmt.Fprint(w, `{"error":"bad_verification_code"}`) // GitHub really does send a 200.
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.ghIssued++
+		fmt.Fprintf(w, `{"access_token":"gh-%s"}`, who)
+	})
+	mux.HandleFunc("DELETE /applications/gh-client/token", func(w http.ResponseWriter, r *http.Request) {
+		user, pass, _ := r.BasicAuth()
+		if user != "gh-client" || pass != "gh-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			AccessToken string `json:"access_token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.revoked[body.AccessToken] = true
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /user", func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -166,6 +195,29 @@ func statePrompt(t *testing.T, location string) (string, string) {
 func (b *browser) callback(query string) string {
 	b.t.Helper()
 	resp, err := b.client.Get(b.api + "/oauth/google/callback?" + query)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.Header.Get("Location")
+}
+
+// startGitHub returns the redirect GitHub would be sent, and its state.
+func (b *browser) startGitHub() (location, state string) {
+	b.t.Helper()
+	resp, err := b.client.Get(b.api + "/auth/github/start")
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	resp.Body.Close()
+	location = resp.Header.Get("Location")
+	state, _ = statePrompt(b.t, location)
+	return location, state
+}
+
+func (b *browser) githubCallback(query string) string {
+	b.t.Helper()
+	resp, err := b.client.Get(b.api + "/oauth/github/callback?" + query)
 	if err != nil {
 		b.t.Fatal(err)
 	}
@@ -624,5 +676,87 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	}
 	if code := carol.call(http.MethodGet, "/auth/me", nil, nil); code != http.StatusOK {
 		t.Errorf("new account has no session: %d", code)
+	}
+
+	// --- Connect GitHub ---
+	server.Sync.GitHubOAuth = &github.OAuth{
+		ClientID: "gh-client", ClientSecret: "gh-secret", RedirectURI: "http://web/api/oauth/github/callback",
+		WebURL: services.URL, APIURL: services.URL, HTTP: services.Client(),
+	}
+	loc, state := carol.startGitHub()
+	if !strings.HasPrefix(loc, services.URL+"/login/oauth/authorize?") || !strings.Contains(loc, "client_id=gh-client") || state == "" {
+		t.Errorf("authorize redirect: %q", loc)
+	}
+	if strings.Contains(loc, "scope=") {
+		t.Errorf("should ask for no scopes: %q", loc)
+	}
+	if loc := carol.githubCallback("state=" + state + "&error=access_denied"); !strings.Contains(loc, "github=denied") {
+		t.Errorf("declined: %q", loc)
+	}
+	_, state = carol.startGitHub()
+	if loc := carol.githubCallback("state=" + state + "&code=nope"); !strings.Contains(loc, "github=failed") {
+		t.Errorf("bad code: %q", loc)
+	}
+	_, state = carol.startGitHub()
+	if loc := newBrowser(t, api.URL).githubCallback("state=" + state + "&code=ghcode-carolhub"); !strings.Contains(loc, "/login?error=expired") {
+		t.Errorf("callback with no session: %q", loc)
+	}
+	_, state = carol.startGitHub()
+	if loc := carol.githubCallback("state=" + state + "&code=ghcode-carolhub"); !strings.Contains(loc, "github=connected") {
+		t.Errorf("connect: %q", loc)
+	}
+	if login := carol.me().GitHub.Login; login == nil || *login != "carolhub" {
+		t.Errorf("connected login = %v", login)
+	}
+	if loc := carol.githubCallback("state=" + state + "&code=ghcode-mallory"); !strings.Contains(loc, "github=expired") {
+		t.Errorf("state replayed: %q", loc)
+	}
+	if carol.summary().GitHub.Contributions != 2 {
+		t.Error("connecting should sync straight away")
+	}
+
+	// Connecting a different GitHub account revokes the token it replaces.
+	_, state = carol.startGitHub()
+	if loc := carol.githubCallback("state=" + state + "&code=ghcode-carol2"); !strings.Contains(loc, "github=connected") {
+		t.Errorf("reconnect: %q", loc)
+	}
+	fake.mu.Lock()
+	replaced := fake.revoked["gh-carolhub"]
+	fake.mu.Unlock()
+	if !replaced {
+		t.Error("the replaced token should be revoked")
+	}
+
+	// A connection started by one account can't land on another: swapping accounts
+	// mid-flow must not link GitHub to the wrong one.
+	swap := newBrowser(t, api.URL)
+	swap.login("code-erin")
+	_, state = swap.startGitHub()
+	swap.login("code-frank")
+	if loc := swap.githubCallback("state=" + state + "&code=ghcode-erinhub"); !strings.Contains(loc, "github=expired") {
+		t.Errorf("state for another account: %q", loc)
+	}
+	if login := swap.me().GitHub.Login; login != nil {
+		t.Errorf("frank got erin's GitHub: %v", *login)
+	}
+
+	// Disconnecting revokes the token.
+	if code := carol.call(http.MethodDelete, "/settings/github", nil, nil); code != http.StatusNoContent {
+		t.Errorf("disconnect: %d", code)
+	}
+	fake.mu.Lock()
+	unlinked := fake.revoked["gh-carol2"]
+	fake.mu.Unlock()
+	if !unlinked {
+		t.Error("disconnecting should revoke the token")
+	}
+	if carol.me().GitHub.Login != nil {
+		t.Error("still linked after disconnecting")
+	}
+
+	// Without an OAuth app, the button has nowhere to go and says so.
+	server.Sync.GitHubOAuth = nil
+	if loc, _ := carol.startGitHub(); !strings.Contains(loc, "github=failed") {
+		t.Errorf("not configured: %q", loc)
 	}
 }

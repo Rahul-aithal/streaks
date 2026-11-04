@@ -34,6 +34,7 @@ type Syncer struct {
 	Google        *gtasks.Client
 	Box           *secretbox.Box
 	GitHubBaseURL string
+	GitHubOAuth   *github.OAuth // Nil unless a GitHub OAuth app is configured.
 	Interval      time.Duration
 	Now           func() time.Time
 
@@ -173,6 +174,10 @@ func (s *Syncer) LinkGitHub(ctx context.Context, userID int64, token string) (st
 	if err != nil {
 		return "", err
 	}
+	u, err := s.Store.GetUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
 	sealed, err := s.Box.Seal(token)
 	if err != nil {
 		return "", err
@@ -180,13 +185,56 @@ func (s *Syncer) LinkGitHub(ctx context.Context, userID int64, token string) (st
 	if err := s.Store.SetGitHub(ctx, userID, login, sealed); err != nil {
 		return "", err
 	}
+	if old, err := s.openGitHubToken(u); err == nil && old != token {
+		s.revokeGitHub(ctx, u.ID, old)
+	}
 	if err := s.Sync(ctx, userID, KindGitHub); err != nil {
 		slog.Error("first GitHub sync", "user", userID, "err", err)
 	}
 	return login, nil
 }
 
-// DeleteAccount revokes Google access and deletes the user and all their data. A
+// ConnectGitHub finishes the OAuth flow by linking the token the code is worth.
+func (s *Syncer) ConnectGitHub(ctx context.Context, userID int64, code string) (string, error) {
+	if s.GitHubOAuth == nil {
+		return "", ErrNotConfigured
+	}
+	token, err := s.GitHubOAuth.Exchange(ctx, code)
+	if err != nil {
+		return "", err
+	}
+	return s.LinkGitHub(ctx, userID, token)
+}
+
+// UnlinkGitHub removes the stored token, then revokes it. A failed revoke doesn't
+// block unlinking, because Streaks no longer holds the token either way.
+func (s *Syncer) UnlinkGitHub(ctx context.Context, u store.User) error {
+	if err := s.Store.ClearGitHub(ctx, u.ID); err != nil {
+		return err
+	}
+	if token, err := s.openGitHubToken(u); err == nil {
+		s.revokeGitHub(ctx, u.ID, token)
+	}
+	return nil
+}
+
+func (s *Syncer) openGitHubToken(u store.User) (string, error) {
+	if u.GitHubTokenEnc == nil {
+		return "", ErrNotConfigured
+	}
+	return s.Box.Open(*u.GitHubTokenEnc)
+}
+
+func (s *Syncer) revokeGitHub(ctx context.Context, userID int64, token string) {
+	if s.GitHubOAuth == nil {
+		return
+	}
+	if err := s.GitHubOAuth.Revoke(ctx, token); err != nil {
+		slog.Warn("revoke failed; remove access at github.com/settings/applications", "user", userID, "err", err)
+	}
+}
+
+// DeleteAccount revokes Google and GitHub access and deletes the user and all their data. A
 // failed revoke doesn't block deletion.
 func (s *Syncer) DeleteAccount(ctx context.Context, u store.User) error {
 	ctx, cancel := context.WithTimeout(ctx, syncLimit)
@@ -199,6 +247,9 @@ func (s *Syncer) DeleteAccount(ctx context.Context, u store.User) error {
 		slog.Warn("skip revoke: token unreadable", "user", u.ID)
 	} else if err := s.Google.Revoke(ctx, token); err != nil {
 		slog.Warn("revoke failed; remove access at myaccount.google.com/permissions", "user", u.ID, "err", err)
+	}
+	if token, err := s.openGitHubToken(u); err == nil {
+		s.revokeGitHub(ctx, u.ID, token)
 	}
 	return s.Store.DeleteUser(ctx, u.ID)
 }

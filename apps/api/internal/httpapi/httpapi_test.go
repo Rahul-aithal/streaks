@@ -99,6 +99,14 @@ func TestStateStore(t *testing.T) {
 		t.Error("state accepted twice")
 	}
 
+	owned, _ := s.issueFor("7")
+	if s.consumeFor(owned, "8") || s.consume(owned) {
+		t.Error("state accepted for the wrong owner")
+	}
+	if !s.consumeFor(owned, "7") {
+		t.Error("state rejected for its owner")
+	}
+
 	expired, _ := s.issue()
 	now = now.Add(stateLifetime + time.Second)
 	if s.consume(expired) {

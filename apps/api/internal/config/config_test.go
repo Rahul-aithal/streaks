@@ -36,6 +36,14 @@ func TestValidateServe(t *testing.T) {
 	if err := c.ValidateServe(); err != nil {
 		t.Error(err)
 	}
+	c.GitHubClientID = "x"
+	if err := c.ValidateServe(); err == nil {
+		t.Error("a GitHub client ID without its secret must not start the server")
+	}
+	c.GitHubClientSecret = "x"
+	if err := c.ValidateServe(); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestWebOrigin(t *testing.T) {

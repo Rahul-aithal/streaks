@@ -56,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /auth/sign-out", s.signOut)
 	api.HandleFunc("POST /auth/sign-out-all", s.signOutAll)
 	api.HandleFunc("DELETE /account", s.deleteAccount)
+	api.HandleFunc("GET /auth/github/start", s.startGitHubConnect)
 	api.HandleFunc("PUT /settings/github", s.linkGitHub)
 	api.HandleFunc("DELETE /settings/github", s.unlinkGitHub)
 
@@ -68,6 +69,9 @@ func (s *Server) Handler() http.Handler {
 	// Public: these create the session. The state value and cookie protect the callback.
 	root.HandleFunc("GET /auth/google/start", s.startGoogleLogin)
 	root.HandleFunc("GET /oauth/google/callback", s.googleCallback)
+	// Public so an expired session lands on the login page rather than a JSON 401.
+	// It checks the session itself, and the state must be for the signed-in user.
+	root.HandleFunc("GET /oauth/github/callback", s.githubCallback)
 	root.Handle("/", s.requireSession(api))
 	return s.checkOrigin(root)
 }
@@ -446,7 +450,7 @@ func (s *Server) syncNow(kind string) http.HandlerFunc {
 		err := s.Sync.Sync(r.Context(), userID(r), kind)
 		switch {
 		case errors.Is(err, syncer.ErrNotConfigured):
-			writeError(w, http.StatusConflict, "Link your GitHub account in Settings first")
+			writeError(w, http.StatusConflict, "Connect your GitHub account in Settings first")
 		case err != nil:
 			slog.Error("manual sync failed", "kind", kind, "user", userID(r), "err", err)
 			writeError(w, http.StatusBadGateway, err.Error())

@@ -20,6 +20,11 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleTokenKey     string
+
+	// Optional. Without them, GitHub can only be linked by pasting a token.
+	GitHubClientID     string
+	GitHubClientSecret string
+	GitHubRedirectURI  string
 	GoogleRedirectURI  string
 }
 
@@ -44,6 +49,8 @@ func (c Config) ValidateServe() error {
 		return errors.New("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required: sign-in uses Google")
 	case c.GoogleTokenKey == "":
 		return errors.New("GOOGLE_TOKEN_KEY is required: openssl rand -hex 32")
+	case (c.GitHubClientID == "") != (c.GitHubClientSecret == ""):
+		return errors.New("set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or neither")
 	}
 	return nil
 }
@@ -63,6 +70,9 @@ func Load() (Config, error) {
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		GoogleTokenKey:     os.Getenv("GOOGLE_TOKEN_KEY"),
 		GoogleRedirectURI:  envOr("GOOGLE_REDIRECT_URI", "http://localhost:5173/api/oauth/google/callback"),
+		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		GitHubRedirectURI:  envOr("GITHUB_REDIRECT_URI", "http://localhost:5173/api/oauth/github/callback"),
 	}
 	interval, err := time.ParseDuration(envOr("SYNC_INTERVAL", "6h"))
 	if err != nil || interval <= 0 {

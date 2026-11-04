@@ -90,7 +90,7 @@ function HabitForm({ habit, onDone }: { habit?: Habit; onDone: () => void }) {
           </ToggleGroup>
           <p className="text-xs text-muted-foreground">
             {source === "github"
-              ? "Checked in automatically on days with a push or an opened PR. Link GitHub in Settings."
+              ? "Checked in automatically on days with a push or an opened PR. Connect GitHub in Settings."
               : "You check it in yourself."}
           </p>
         </div>

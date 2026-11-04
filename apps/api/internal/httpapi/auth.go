@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 const (
 	sessionCookie   = "streaks_session"
 	stateCookie     = "streaks_oauth_state"
+	githubCookie    = "streaks_github_state"
 	sessionLifetime = 30 * 24 * time.Hour
 	stateLifetime   = 10 * time.Minute
 
@@ -44,7 +46,10 @@ func newStateStore(now func() time.Time) *stateStore {
 	return &stateStore{now: now, states: map[string]time.Time{}}
 }
 
-func (s *stateStore) issue() (string, error) {
+func (s *stateStore) issue() (string, error) { return s.issueFor("") }
+
+// issueFor makes a state that's only valid for the given owner.
+func (s *stateStore) issueFor(owner string) (string, error) {
 	state, err := randomToken()
 	if err != nil {
 		return "", err
@@ -57,16 +62,19 @@ func (s *stateStore) issue() (string, error) {
 			delete(s.states, k)
 		}
 	}
-	s.states[state] = now.Add(stateLifetime)
+	s.states[state+"|"+owner] = now.Add(stateLifetime)
 	return state, nil
 }
 
 // consume reports whether state is valid. It works only once.
-func (s *stateStore) consume(state string) bool {
+func (s *stateStore) consume(state string) bool { return s.consumeFor(state, "") }
+
+func (s *stateStore) consumeFor(state, owner string) bool {
+	key := state + "|" + owner
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	expires, ok := s.states[state]
-	delete(s.states, state)
+	expires, ok := s.states[key]
+	delete(s.states, key)
 	return ok && !s.now().After(expires)
 }
 
@@ -296,7 +304,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts": list,
 		"google":   map[string]any{"needs_reconnect": sess.user.NeedsReconnect, "sync": googleRun},
-		"github":   map[string]any{"login": sess.user.GitHubLogin, "sync": githubRun},
+		"github": map[string]any{
+			"login": sess.user.GitHubLogin, "sync": githubRun, "connect_enabled": s.Sync.GitHubOAuth != nil,
+		},
 	})
 }
 
@@ -361,6 +371,64 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"signed_in": remaining})
 }
 
+func redirectGitHubResult(w http.ResponseWriter, r *http.Request, result string) {
+	http.Redirect(w, r, "/settings?"+url.Values{"github": {result}}.Encode(), http.StatusFound)
+}
+
+// startGitHubConnect is a plain link. The state is tied to this browser by a
+// cookie and to the signed-in user, so GitHub is linked to the account that asked.
+func (s *Server) startGitHubConnect(w http.ResponseWriter, r *http.Request) {
+	if s.Sync.GitHubOAuth == nil {
+		redirectGitHubResult(w, r, errFailed)
+		return
+	}
+	state, err := s.oauthStates.issueFor(strconv.FormatInt(userID(r), 10))
+	if err != nil {
+		redirectGitHubResult(w, r, errFailed)
+		return
+	}
+	s.setCookie(w, githubCookie, state, stateLifetime)
+	http.Redirect(w, r, s.Sync.GitHubOAuth.AuthorizeURL(state), http.StatusFound)
+}
+
+func (s *Server) githubCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	stateCookieValue, stateErr := r.Cookie(githubCookie)
+	s.clearCookie(w, githubCookie)
+
+	session, err := r.Cookie(sessionCookie)
+	if err != nil {
+		redirectLoginError(w, r, errExpired)
+		return
+	}
+	user, err := s.Store.SessionUser(r.Context(), hashToken(session.Value))
+	if errors.Is(err, store.ErrNotFound) {
+		redirectLoginError(w, r, errExpired)
+		return
+	}
+	if err != nil {
+		slog.Error("github callback session", "err", err)
+		redirectGitHubResult(w, r, errFailed)
+		return
+	}
+
+	owner := strconv.FormatInt(user.ID, 10)
+	if stateErr != nil || stateCookieValue.Value != q.Get("state") || !s.oauthStates.consumeFor(q.Get("state"), owner) {
+		redirectGitHubResult(w, r, errExpired)
+		return
+	}
+	if q.Get("error") != "" || q.Get("code") == "" {
+		redirectGitHubResult(w, r, errDenied)
+		return
+	}
+	if _, err := s.Sync.ConnectGitHub(r.Context(), user.ID, q.Get("code")); err != nil {
+		slog.Error("connect GitHub", "user", user.ID, "err", err)
+		redirectGitHubResult(w, r, errFailed)
+		return
+	}
+	redirectGitHubResult(w, r, "connected")
+}
+
 func (s *Server) linkGitHub(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token string `json:"token"`
@@ -387,7 +455,7 @@ func (s *Server) linkGitHub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) unlinkGitHub(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.ClearGitHub(r.Context(), userID(r)); err != nil {
+	if err := s.Sync.UnlinkGitHub(r.Context(), sessionFrom(r).user); err != nil {
 		writeStoreError(w, err)
 		return
 	}

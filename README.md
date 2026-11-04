@@ -48,10 +48,21 @@ make migrate
 
 ### 3. GitHub (optional, per account)
 
-1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new). Under **Account permissions**, set **Events** to **Read-only**. This is what exposes private activity.
-2. In Streaks, open the account menu, go to **Settings**, and paste the token under **GitHub**.
+Do this once for the Connect GitHub button:
 
-Each account links its own token.
+1. Create an [OAuth app](https://github.com/settings/applications/new). Use `http://localhost:5173` as the homepage URL, and this **Authorization callback URL**:
+
+   ```
+   http://localhost:5173/api/oauth/github/callback
+   ```
+
+2. Generate a client secret, then set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`.
+
+Each Streaks account then connects its own GitHub account under **Settings**. It connects whichever account you're signed in to on github.com.
+
+Connect asks for no permissions, so it **only counts public repositories**. The OAuth permission GitHub documents for private repositories is `repo`, which also allows writing to your code, so Streaks doesn't ask for it.
+
+To count private repositories, use a token instead: create a [fine-grained token](https://github.com/settings/personal-access-tokens/new), set **Events** to **Read-only** under **Account permissions**, and paste it under **Settings → GitHub**.
 
 ## Running
 
@@ -68,7 +79,7 @@ Click your avatar for the account menu:
 - **Add account:** sign in with another Google account. Both stay signed in on this browser.
 - **Switch account:** swap instantly, without signing in again. The whole app changes to that account's data.
 - **Sign out:** signs out the active account and moves to the next. **Sign out of all accounts** ends the session.
-- **Settings:** link GitHub, reconnect Google, or delete the account and its data.
+- **Settings:** connect GitHub, reconnect Google, or delete the account and its data.
 
 | Command | What it does |
 |---|---|
@@ -127,7 +138,7 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 - **Sign-in:** any Google account that gets past Google's consent screen can sign in, as long as Google has verified its email. While the Google app is in Testing, that means only its test users. Publishing the app would let anyone with a Google account in, each with their own empty account.
 - **Sessions:** an HttpOnly, SameSite=Lax cookie that lasts 30 days. Only its SHA-256 hash is stored, and signing out invalidates it on the server.
 - **Isolation:** every data query is scoped to the signed-in user. Another user's habit returns 404.
-- **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them.
+- **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them. Disconnecting GitHub or deleting an account revokes a connected token. Connect requests no GitHub scopes.
 - **Requests:** state-changing requests from another origin are refused. The Google callback needs a one-time `state` value that matches a cookie in the same browser.
 
 The API only listens on loopback. To host it, serve it over HTTPS and update `GOOGLE_REDIRECT_URI` and the OAuth client; cookies then become `Secure` automatically.

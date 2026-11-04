@@ -50,7 +50,7 @@ export interface Account {
 export interface Me {
   accounts: Account[]
   google: { needs_reconnect: boolean; sync: SyncRun }
-  github: { login: string | null; sync: SyncRun }
+  github: { login: string | null; sync: SyncRun; connect_enabled: boolean }
 }
 
 export interface SummaryHabit {
@@ -123,6 +123,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const GOOGLE_SIGN_IN_URL = "/api/auth/google/start"
 export const GOOGLE_RECONNECT_URL = "/api/auth/google/start?consent=1"
+export const GITHUB_CONNECT_URL = "/api/auth/github/start"
 export const GITHUB_TOKEN_URL = "https://github.com/settings/personal-access-tokens/new"
 
 export const api = {
