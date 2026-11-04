@@ -1,0 +1,10 @@
+.env
+.env.local
+bin/
+node_modules/
+dist/
+.output/
+.tanstack/
+.nitro/
+*.log
+.DS_Store
