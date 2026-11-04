@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type Summary, type SummaryHabit, type SyncRun } from "@/lib/api"
-import { formatDay, formatLong } from "@/lib/dates"
+import { formatDay, formatInstant, formatLong } from "@/lib/dates"
 import { useApiMutation } from "@/lib/use-api-mutation"
 
 export const Route = createFileRoute("/")({ component: TodayPage })
@@ -130,6 +130,25 @@ function HabitRow({ habit, day }: { habit: SummaryHabit; day: string }) {
 function TasksCard({ summary }: { summary: Summary }) {
   const { tasks } = summary
   const sync = useApiMutation(api.syncGoogleTasks)
+  const needsReconnect = tasks.accounts.filter((a) => a.needs_reconnect)
+
+  if (tasks.accounts.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Tasks</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            <Link to="/accounts" className="underline">
+              Connect a Google account
+            </Link>{" "}
+            to see your tasks here.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <Card>
@@ -144,6 +163,14 @@ function TasksCard({ summary }: { summary: Summary }) {
         <p className="text-sm tabular-nums">
           {tasks.completed} of {tasks.total} done · {tasks.overdue} overdue
         </p>
+        {needsReconnect.length > 0 && (
+          <p className="text-sm text-destructive">
+            {needsReconnect.map((a) => a.email).join(", ")} can't sync, so these tasks may be out of date.{" "}
+            <Link to="/accounts" className="underline">
+              Reconnect
+            </Link>
+          </p>
+        )}
         {tasks.items.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nothing due today.</p>
         ) : (
@@ -151,8 +178,13 @@ function TasksCard({ summary }: { summary: Summary }) {
             {tasks.items.map((task) => {
               const done = task.status === "completed"
               return (
-                <li key={task.id} className="flex items-center justify-between gap-3 text-sm">
-                  <span className={done ? "text-muted-foreground line-through" : ""}>{task.title}</span>
+                <li key={`${task.account}:${task.id}`} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="min-w-0">
+                    <span className={done ? "text-muted-foreground line-through" : ""}>{task.title}</span>
+                    {tasks.accounts.length > 1 && (
+                      <span className="block truncate text-xs text-muted-foreground">{task.account}</span>
+                    )}
+                  </span>
                   {task.overdue && task.due && (
                     <Badge variant="destructive">Due {formatDay(task.due, { day: "numeric", month: "short" })}</Badge>
                   )}
@@ -168,13 +200,7 @@ function TasksCard({ summary }: { summary: Summary }) {
 }
 
 function SyncNote({ label, run }: { label: string; run: SyncRun }) {
-  const when = run.last_success_at
-    ? new Date(run.last_success_at).toLocaleString("en-IN", {
-        timeZone: "Asia/Kolkata",
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : null
+  const when = run.last_success_at ? formatInstant(run.last_success_at) : null
   return (
     <div className="text-xs text-muted-foreground">
       <p>{when ? `${label} last synced ${when}` : `${label} hasn't synced yet`}</p>

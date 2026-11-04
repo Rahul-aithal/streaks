@@ -11,6 +11,13 @@ export const formatDay = (day: string, options: Intl.DateTimeFormatOptions) =>
 export const formatLong = (day: string) =>
   formatDay(day, { weekday: "short", day: "numeric", month: "short", year: "numeric" })
 
+export const formatInstant = (iso: string) =>
+  new Date(iso).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "short",
+  })
+
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 export const WEEKDAY_OPTIONS = WEEKDAYS.map((label, value) => ({ label, value }))
 

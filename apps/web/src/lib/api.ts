@@ -46,8 +46,23 @@ export interface SummaryHabit {
   streak: StreakResult
 }
 
+export interface GoogleAccount {
+  id: number
+  email: string
+  last_success_at: string | null
+  last_error: string | null
+  needs_reconnect: boolean
+  created_at: string
+}
+
+export interface GoogleAccounts {
+  configured: boolean
+  accounts: GoogleAccount[]
+}
+
 export interface SummaryTask {
   id: string
+  account: string
   title: string
   status: string
   due: string | null
@@ -64,6 +79,7 @@ export interface Summary {
     overdue: number
     items: SummaryTask[]
     sync: SyncRun
+    accounts: GoogleAccount[]
   }
   streaks: { daily: StreakResult }
   github: { contributions: number; sync: SyncRun }
@@ -121,4 +137,7 @@ export const api = {
     request<Habit>("DELETE", `/habits/${id}/check-ins/${day}`),
   syncGitHub: () => request<SyncRun>("POST", "/sync/github"),
   syncGoogleTasks: () => request<SyncRun>("POST", "/sync/google-tasks"),
+  googleAccounts: () => request<GoogleAccounts>("GET", "/google-accounts"),
+  connectGoogle: () => request<{ url: string }>("POST", "/google-accounts/connect"),
+  disconnectGoogle: (id: number) => request<void>("DELETE", `/google-accounts/${id}`),
 }

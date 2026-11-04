@@ -63,6 +63,9 @@ function App() {
               <Link to="/habits" className={navLink} activeProps={navLinkActive}>
                 Habits
               </Link>
+              <Link to="/accounts" className={navLink} activeProps={navLinkActive}>
+                Accounts
+              </Link>
             </nav>
           </header>
           <main className="flex flex-col gap-6">
