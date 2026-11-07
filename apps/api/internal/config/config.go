@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/url"
 	"os"
 	"strings"
@@ -60,6 +61,11 @@ func (c Config) ValidateServe() error {
 		return errors.New("set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or neither")
 	case c.SMTPHost != "" && c.EmailFrom == "":
 		return errors.New("EMAIL_FROM is required when SMTP_HOST is set")
+	}
+	if c.SMTPHost != "" {
+		if _, err := mail.ParseAddress(c.EmailFrom); err != nil {
+			return fmt.Errorf("EMAIL_FROM %q isn't an email address (it defaults to SMTP_USERNAME)", c.EmailFrom)
+		}
 	}
 	return nil
 }

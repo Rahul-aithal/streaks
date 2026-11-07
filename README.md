@@ -68,7 +68,23 @@ To count private repositories, use a token instead: create a [fine-grained token
 
 Streaks can email each account a summary of today's habits and streaks at **11 AM, 5 PM and 10 PM IST**. The 10 PM email warns about streaks that end at midnight.
 
-To send through Gmail:
+To send through [Resend](https://resend.com):
+
+1. Create an API key with **Sending access**.
+2. In `.env`, set:
+
+   ```
+   SMTP_HOST=smtp.resend.com
+   SMTP_USERNAME=resend
+   SMTP_PASSWORD=re_your_api_key
+   EMAIL_FROM=onboarding@resend.dev
+   ```
+
+   Until you verify a domain in Resend, `onboarding@resend.dev` can only send to the email address you signed up to Resend with. To email other accounts, verify a domain and use an address on it as `EMAIL_FROM`.
+
+3. Restart, then use **Settings → Email reminders → Send a test email**.
+
+Or, to send through Gmail:
 
 1. Turn on 2-Step Verification for the Google account that will send the emails.
 2. Create an [app password](https://myaccount.google.com/apppasswords).

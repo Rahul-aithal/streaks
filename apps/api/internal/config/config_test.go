@@ -48,7 +48,11 @@ func TestValidateServe(t *testing.T) {
 	if err := c.ValidateServe(); err == nil {
 		t.Error("SMTP without a from address must not start the server")
 	}
-	c.EmailFrom = "me@example.com"
+	c.EmailFrom = "resend" // Resend's SMTP username, which isn't an address.
+	if err := c.ValidateServe(); err == nil {
+		t.Error("a from value that isn't an address must not start the server")
+	}
+	c.EmailFrom = "Streaks <me@example.com>"
 	if err := c.ValidateServe(); err != nil {
 		t.Error(err)
 	}
