@@ -51,6 +51,7 @@ export interface Me {
   accounts: Account[]
   google: { needs_reconnect: boolean; sync: SyncRun }
   github: { login: string | null; sync: SyncRun; connect_enabled: boolean }
+  email: { address: string; enabled: boolean; configured: boolean }
 }
 
 export interface SummaryHabit {
@@ -134,6 +135,8 @@ export const api = {
   deleteAccount: () => request<{ signed_in: boolean }>("DELETE", "/account"),
   linkGitHub: (token: string) => request<{ login: string }>("PUT", "/settings/github", { token }),
   unlinkGitHub: () => request<void>("DELETE", "/settings/github"),
+  setEmailReminders: (enabled: boolean) => request<void>("PUT", "/settings/email", { enabled }),
+  sendTestEmail: () => request<void>("POST", "/settings/email/test"),
 
   summary: () => request<Summary>("GET", "/summary/today"),
   habits: () => request<Habit[]>("GET", "/habits"),

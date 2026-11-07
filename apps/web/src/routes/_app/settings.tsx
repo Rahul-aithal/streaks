@@ -37,6 +37,7 @@ function SettingsPage() {
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
       <GoogleCard />
       <GitHubCard />
+      <EmailCard />
       <DangerCard />
     </div>
   )
@@ -193,6 +194,53 @@ function GitHubIcon({ className }: { className?: string }) {
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
       <path d="M12 .3a12 12 0 0 0-3.800 23.400c.6.100.8-.300.8-.600v-2.100c-3.300.700-4-1.600-4-1.600-.5-1.400-1.300-1.800-1.300-1.800-1.100-.700.1-.700.1-.700 1.200.100 1.800 1.200 1.800 1.200 1.100 1.800 2.800 1.300 3.500 1 .1-.800.4-1.300.8-1.600-2.700-.300-5.500-1.300-5.500-5.900 0-1.300.5-2.400 1.200-3.200-.100-.300-.500-1.500.1-3.200 0 0 1-.300 3.300 1.200a11.500 11.500 0 0 1 6 0c2.300-1.500 3.300-1.200 3.300-1.200.6 1.700.2 2.900.1 3.200.8.800 1.200 1.900 1.200 3.200 0 4.600-2.800 5.600-5.500 5.900.4.400.8 1.100.8 2.200v3.300c0 .3.200.7.800.6A12 12 0 0 0 12 .3z" />
     </svg>
+  )
+}
+
+function EmailCard() {
+  const { email } = useMe()
+  const toggle = useApiMutation((enabled: boolean) => api.setEmailReminders(enabled), (_, enabled) =>
+    toast.success(enabled ? "Reminder emails are on." : "Reminder emails are off."),
+  )
+  const test = useApiMutation(api.sendTestEmail, () => toast.success(`Test email sent to ${email.address}.`))
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Email reminders</CardTitle>
+        <CardDescription>
+          A summary of today's habits and streaks at 11 AM, 5 PM and 10 PM IST, sent to {email.address}. The 10 PM one
+          warns about streaks that end at midnight.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {email.configured ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={email.enabled ? "default" : "secondary"}>{email.enabled ? "On" : "Off"}</Badge>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={toggle.isPending}
+                onClick={() => toggle.mutate(!email.enabled)}
+              >
+                {email.enabled ? "Turn off" : "Turn on"}
+              </Button>
+              <Button variant="ghost" size="sm" disabled={test.isPending} onClick={() => test.mutate(undefined)}>
+                {test.isPending ? "Sending…" : "Send a test email"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Sent only while Streaks is running. A reminder more than an hour late is skipped.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            To send emails, add the SMTP settings to <code>.env</code> (see the README), then restart.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

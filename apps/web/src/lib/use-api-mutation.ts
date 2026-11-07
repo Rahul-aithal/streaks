@@ -5,14 +5,14 @@ import { ApiError } from "@/lib/api"
 // Every write can change streaks anywhere, so refetch everything on success.
 export function useApiMutation<TVars, TResult>(
   fn: (vars: TVars) => Promise<TResult>,
-  onSuccess?: (result: TResult) => void,
+  onSuccess?: (result: TResult, vars: TVars) => void,
 ) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: fn,
-    onSuccess: async (result) => {
+    onSuccess: async (result, vars) => {
       await queryClient.invalidateQueries()
-      onSuccess?.(result)
+      onSuccess?.(result, vars)
     },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 401) {

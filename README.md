@@ -64,6 +64,26 @@ Connect asks for no permissions, so it **only counts public repositories**. The 
 
 To count private repositories, use a token instead: create a [fine-grained token](https://github.com/settings/personal-access-tokens/new), set **Events** to **Read-only** under **Account permissions**, and paste it under **Settings → GitHub**.
 
+### 4. Reminder emails (optional)
+
+Streaks can email each account a summary of today's habits and streaks at **11 AM, 5 PM and 10 PM IST**. The 10 PM email warns about streaks that end at midnight.
+
+To send through Gmail:
+
+1. Turn on 2-Step Verification for the Google account that will send the emails.
+2. Create an [app password](https://myaccount.google.com/apppasswords).
+3. In `.env`, set:
+
+   ```
+   SMTP_HOST=smtp.gmail.com
+   SMTP_USERNAME=you@gmail.com
+   SMTP_PASSWORD=the-16-character-app-password
+   ```
+
+4. Restart, then use **Settings → Email reminders → Send a test email**.
+
+Any SMTP server works. Port 465 uses TLS from the start, and other ports must offer STARTTLS. Each account can turn its emails off in Settings.
+
 ## Running
 
 ```sh
@@ -133,6 +153,14 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 - A failed sync keeps the last known tasks until it recovers.
 - Snapshots are only taken while the API runs, so days the laptop is off have none.
 
+**Reminder emails**
+
+- Each email lists today's habits as to do, done, or rest day, with each streak. A streak shown as at risk ends if the habit isn't done by midnight.
+- GitHub is synced just before each email, so GitHub habits are up to date.
+- Emails are only sent while the API runs. If the laptop wakes up within an hour of a reminder time, that reminder still goes out; later than that, it's skipped.
+- Each reminder is sent at most once per account, even across restarts. A failed send is retried every 10 minutes within that hour.
+- Accounts with no active habits get no emails.
+
 ## Security
 
 - **Sign-in:** any Google account that gets past Google's consent screen can sign in, as long as Google has verified its email. While the Google app is in Testing, that means only its test users. Publishing the app would let anyone with a Google account in, each with their own empty account.
@@ -153,6 +181,8 @@ apps/api/internal/httpapi  JSON routes, sign-in and sessions
 apps/api/internal/github   GitHub Events client
 apps/api/internal/gtasks   Google sign-in, Tasks client and daily counts
 apps/api/internal/secretbox  Encryption for stored tokens
+apps/api/internal/reminder   Reminder email schedule and content
+apps/api/internal/mailer     SMTP sending
 apps/api/internal/syncer   In-process sync loop
 apps/api/migrations        Goose SQL, embedded in the binary
 apps/web/src/routes        Login, Today, habits list, habit detail, settings
