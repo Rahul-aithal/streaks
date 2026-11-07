@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query"
 import { type FormEvent, type ReactNode, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,6 +33,9 @@ export function HabitFormDialog({ habit, trigger }: { habit?: Habit; trigger: Re
 function HabitForm({ habit, onDone }: { habit?: Habit; onDone: () => void }) {
   const [name, setName] = useState(habit?.name ?? "")
   const [source, setSource] = useState<Source>(habit?.source ?? "manual")
+  // Only one active GitHub activity habit is allowed: it already counts every push and PR.
+  const habits = useQuery({ queryKey: ["habits"], queryFn: api.habits, enabled: !habit })
+  const githubHabit = habits.data?.find((h) => h.source === "github" && !h.archived)
   // All seven days and no days both mean "every day"; show that as no selection.
   const [days, setDays] = useState<string[]>(
     habit && habit.target_days.length < 7 ? habit.target_days.map(String) : [],
@@ -86,12 +90,16 @@ function HabitForm({ habit, onDone }: { habit?: Habit; onDone: () => void }) {
             className="justify-start"
           >
             <ToggleGroupItem value="manual">Manual</ToggleGroupItem>
-            <ToggleGroupItem value="github">GitHub</ToggleGroupItem>
+            <ToggleGroupItem value="github" disabled={githubHabit !== undefined}>
+              GitHub activity
+            </ToggleGroupItem>
           </ToggleGroup>
           <p className="text-xs text-muted-foreground">
             {source === "github"
-              ? "Checked in automatically on days with a push or an opened PR. Connect GitHub in Settings."
-              : "You check it in yourself."}
+              ? "Checked in automatically on days you push to any repo or open a PR. Connect GitHub in Settings."
+              : githubHabit
+                ? `You check it in yourself. Your GitHub activity habit is "${githubHabit.name}", and you can only have one.`
+                : "You check it in yourself."}
           </p>
         </div>
       )}

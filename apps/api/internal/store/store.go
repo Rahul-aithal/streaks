@@ -25,6 +25,19 @@ const (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrGitHubHabitExists means the user already has an active GitHub habit.
+var ErrGitHubHabitExists = errors.New("an active GitHub habit already exists")
+
+// githubHabitConflict turns the one-GitHub-habit index violation into
+// ErrGitHubHabitExists.
+func githubHabitConflict(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "habits_one_github_per_user" {
+		return ErrGitHubHabitExists
+	}
+	return err
+}
+
 type Store struct {
 	pool *pgxpool.Pool
 }

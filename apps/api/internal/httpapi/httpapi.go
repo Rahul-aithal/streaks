@@ -659,6 +659,11 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "habit not found")
 		return
 	}
+	if errors.Is(err, store.ErrGitHubHabitExists) {
+		writeError(w, http.StatusConflict,
+			"You already have a GitHub activity habit, and it counts all your pushes and PRs. Archive it to use another.")
+		return
+	}
 	if errors.Is(err, context.Canceled) {
 		return // The client went away.
 	}

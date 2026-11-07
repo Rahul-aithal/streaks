@@ -138,7 +138,7 @@ cd apps/api && TEST_DATABASE_URL='postgres://...' go test -p 1 ./internal/store/
 1. Open **Habits → New habit**.
 2. Enter a name and choose a source:
    - **Manual:** you check it in from the Today view.
-   - **GitHub:** the sync checks it in on days with activity. It can't be checked in by hand.
+   - **GitHub activity:** the sync checks it in on days you push to any repo or open a PR, including code pushed by tools like NeetCode's GitHub sync. It can't be checked in by hand. You can have any number of manual habits but only one active GitHub activity habit, since a second would count exactly the same pushes. To replace it, archive it first.
 3. Pick target days, or leave them all off for every day.
 
 To backdate a check-in, open the habit and use **Recent days**. Today and the 2 days before it are allowed.

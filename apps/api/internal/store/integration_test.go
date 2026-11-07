@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -70,13 +71,32 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Errorf("streak = %+v", got)
 	}
 
+	// Only one active GitHub habit, but any number of manual ones.
+	if _, err := s.CreateHabit(ctx, user, "code 2", "github", streak.EveryDay, today); !errors.Is(err, ErrGitHubHabitExists) {
+		t.Fatalf("second GitHub habit: %v", err)
+	}
+	for _, name := range []string{"read", "gym"} {
+		if _, err := s.CreateHabit(ctx, user, name, "manual", streak.EveryDay, today); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreateHabit(ctx, other, "their code", "github", streak.EveryDay, today); err != nil {
+		t.Errorf("another user's GitHub habit: %v", err)
+	}
+
 	// A habit created later picks up activity that's already synced.
+	if err := s.ArchiveHabit(ctx, user, id, today); err != nil {
+		t.Fatal(err)
+	}
 	later, err := s.CreateHabit(ctx, user, "code 2", "github", streak.EveryDay, today)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if h, _ := s.GetHabit(ctx, user, later); len(h.CheckIns) != 2 {
 		t.Errorf("later habit check-ins = %v", h.CheckIns)
+	}
+	if err := s.UnarchiveHabit(ctx, user, id, today); !errors.Is(err, ErrGitHubHabitExists) {
+		t.Errorf("unarchiving a second GitHub habit: %v", err)
 	}
 
 	if err := s.SaveGitHubEvents(ctx, user, nil); err != nil {

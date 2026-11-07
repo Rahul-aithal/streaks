@@ -140,7 +140,7 @@ func (s *Store) CreateHabit(ctx context.Context, userID int64, name, source stri
 		}
 		return nil
 	})
-	return id, err
+	return id, githubHabitConflict(err)
 }
 
 // UpdateHabit changes the name and, when mask is non-nil, schedules the new
@@ -216,7 +216,7 @@ func (s *Store) ArchiveHabit(ctx context.Context, userID, id int64, today streak
 
 // UnarchiveHabit schedules the last non-archived target days from today onward.
 func (s *Store) UnarchiveHabit(ctx context.Context, userID, id int64, today streak.Day) error {
-	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	err := s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE habits SET archived_at = NULL, updated_at = now() WHERE id = $1 AND user_id = $2`, id, userID)
 		if err != nil {
 			return err
@@ -248,6 +248,7 @@ func (s *Store) UnarchiveHabit(ctx context.Context, userID, id int64, today stre
 			ON CONFLICT (habit_id, effective_from) DO UPDATE SET days_mask = EXCLUDED.days_mask`, id, today)
 		return err
 	})
+	return githubHabitConflict(err)
 }
 
 // PutCheckIn marks a day done. Repeating it changes nothing.
