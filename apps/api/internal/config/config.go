@@ -25,7 +25,14 @@ type Config struct {
 	GitHubClientID     string
 	GitHubClientSecret string
 	GitHubRedirectURI  string
-	GoogleRedirectURI  string
+
+	// Optional. Without SMTPHost, no reminder emails are sent.
+	SMTPHost          string
+	SMTPPort          string
+	SMTPUsername      string
+	SMTPPassword      string
+	EmailFrom         string
+	GoogleRedirectURI string
 }
 
 // SecureCookies reports whether the app is served over HTTPS.
@@ -51,6 +58,8 @@ func (c Config) ValidateServe() error {
 		return errors.New("GOOGLE_TOKEN_KEY is required: openssl rand -hex 32")
 	case (c.GitHubClientID == "") != (c.GitHubClientSecret == ""):
 		return errors.New("set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or neither")
+	case c.SMTPHost != "" && c.EmailFrom == "":
+		return errors.New("EMAIL_FROM is required when SMTP_HOST is set")
 	}
 	return nil
 }
@@ -73,6 +82,11 @@ func Load() (Config, error) {
 		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
 		GitHubRedirectURI:  envOr("GITHUB_REDIRECT_URI", "http://localhost:5173/api/oauth/github/callback"),
+		SMTPHost:           os.Getenv("SMTP_HOST"),
+		SMTPPort:           envOr("SMTP_PORT", "587"),
+		SMTPUsername:       os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:       os.Getenv("SMTP_PASSWORD"),
+		EmailFrom:          envOr("EMAIL_FROM", os.Getenv("SMTP_USERNAME")),
 	}
 	interval, err := time.ParseDuration(envOr("SYNC_INTERVAL", "6h"))
 	if err != nil || interval <= 0 {

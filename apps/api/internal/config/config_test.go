@@ -44,6 +44,14 @@ func TestValidateServe(t *testing.T) {
 	if err := c.ValidateServe(); err != nil {
 		t.Error(err)
 	}
+	c.SMTPHost = "smtp.example.com"
+	if err := c.ValidateServe(); err == nil {
+		t.Error("SMTP without a from address must not start the server")
+	}
+	c.EmailFrom = "me@example.com"
+	if err := c.ValidateServe(); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestWebOrigin(t *testing.T) {

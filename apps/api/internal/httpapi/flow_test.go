@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
@@ -21,6 +22,8 @@ import (
 
 	"streaks/internal/github"
 	"streaks/internal/gtasks"
+	"streaks/internal/mailer"
+	"streaks/internal/reminder"
 	"streaks/internal/secretbox"
 	"streaks/internal/store"
 	"streaks/internal/syncer"
@@ -759,4 +762,62 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if loc, _ := carol.startGitHub(); !strings.Contains(loc, "github=failed") {
 		t.Errorf("not configured: %q", loc)
 	}
+
+	// --- Email reminders ---
+	var me struct {
+		Email struct {
+			Address    string
+			Enabled    bool
+			Configured bool
+		}
+	}
+	carol.call(http.MethodGet, "/auth/me", nil, &me)
+	if !me.Email.Enabled || me.Email.Configured || me.Email.Address != "carol@Example.com" {
+		t.Errorf("email settings = %+v", me.Email)
+	}
+	if code := carol.call(http.MethodPost, "/settings/email/test", nil, nil); code != http.StatusConflict {
+		t.Errorf("test email without SMTP: %d", code)
+	}
+	mail := &fakeMail{}
+	server.Reminders = &reminder.Reminder{Store: st, Sync: server.Sync, Mail: mail, Now: now, AppURL: "http://web"}
+	if code := carol.call(http.MethodPost, "/settings/email/test", nil, nil); code != http.StatusConflict {
+		t.Errorf("test email with no habits: %d", code)
+	}
+	carol.call(http.MethodPost, "/habits", map[string]any{"name": "stretch", "source": "manual"}, nil)
+	if code := carol.call(http.MethodPost, "/settings/email/test", nil, nil); code != http.StatusNoContent {
+		t.Fatalf("test email: %d", code)
+	}
+	if len(mail.sent) != 1 || mail.sent[0].To != "carol@Example.com" || !strings.HasPrefix(mail.sent[0].Subject, "[Test] ") {
+		t.Errorf("sent = %+v", mail.sent)
+	}
+	if !strings.Contains(mail.sent[0].Text, "stretch") || strings.Contains(mail.sent[0].Text, "code") {
+		t.Errorf("test email should list only carol's habits:\n%s", mail.sent[0].Text)
+	}
+	if code := carol.call(http.MethodPut, "/settings/email", map[string]any{}, nil); code != http.StatusBadRequest {
+		t.Errorf("missing enabled: %d", code)
+	}
+	if code := carol.call(http.MethodPut, "/settings/email", map[string]any{"enabled": false}, nil); code != http.StatusNoContent {
+		t.Errorf("turn off: %d", code)
+	}
+	carol.call(http.MethodGet, "/auth/me", nil, &me)
+	if me.Email.Enabled {
+		t.Error("still on after turning off")
+	}
+	mail.fail = true
+	if code := carol.call(http.MethodPost, "/settings/email/test", nil, nil); code != http.StatusBadGateway {
+		t.Errorf("failed send: %d", code)
+	}
+}
+
+type fakeMail struct {
+	sent []mailer.Message
+	fail bool
+}
+
+func (f *fakeMail) Send(_ context.Context, m mailer.Message) error {
+	if f.fail {
+		return errors.New("535 rejected")
+	}
+	f.sent = append(f.sent, m)
+	return nil
 }

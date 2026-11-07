@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"streaks/internal/gtasks"
+	"streaks/internal/reminder"
 	"streaks/internal/store"
 	"streaks/internal/streak"
 	"streaks/internal/syncer"
@@ -26,7 +27,9 @@ const (
 type Server struct {
 	Store *store.Store
 	Sync  *syncer.Syncer
-	Now   func() time.Time
+	// Nil when SMTP isn't set up.
+	Reminders *reminder.Reminder
+	Now       func() time.Time
 
 	WebOrigin     string // Browser origin allowed to make state-changing requests.
 	SecureCookies bool
@@ -58,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /account", s.deleteAccount)
 	api.HandleFunc("GET /auth/github/start", s.startGitHubConnect)
 	api.HandleFunc("PUT /settings/github", s.linkGitHub)
+	api.HandleFunc("PUT /settings/email", s.setEmailReminders)
+	api.HandleFunc("POST /settings/email/test", s.sendTestEmail)
 	api.HandleFunc("DELETE /settings/github", s.unlinkGitHub)
 
 	s.oauthStates = newStateStore(s.Now)

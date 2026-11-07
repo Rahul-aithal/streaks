@@ -16,6 +16,7 @@ import (
 
 	"streaks/internal/github"
 	"streaks/internal/gtasks"
+	"streaks/internal/reminder"
 	"streaks/internal/store"
 	"streaks/internal/syncer"
 )
@@ -307,6 +308,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		"github": map[string]any{
 			"login": sess.user.GitHubLogin, "sync": githubRun, "connect_enabled": s.Sync.GitHubOAuth != nil,
 		},
+		"email": map[string]any{
+			"address": sess.user.Email, "enabled": sess.user.EmailReminders, "configured": s.Reminders != nil,
+		},
 	})
 }
 
@@ -457,6 +461,45 @@ func (s *Server) linkGitHub(w http.ResponseWriter, r *http.Request) {
 func (s *Server) unlinkGitHub(w http.ResponseWriter, r *http.Request) {
 	if err := s.Sync.UnlinkGitHub(r.Context(), sessionFrom(r).user); err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) setEmailReminders(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	if err := s.Store.SetEmailReminders(r.Context(), userID(r), *req.Enabled); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sendTestEmail sends a reminder now, so mail setup can be checked without
+// waiting for the next one.
+func (s *Server) sendTestEmail(w http.ResponseWriter, r *http.Request) {
+	if s.Reminders == nil {
+		writeError(w, http.StatusConflict, "Email isn't set up. Add the SMTP settings to .env and restart.")
+		return
+	}
+	err := s.Reminders.SendTest(r.Context(), sessionFrom(r).user)
+	if errors.Is(err, reminder.ErrNoHabits) {
+		writeError(w, http.StatusConflict, "Add a habit first: the email is about your habits.")
+		return
+	}
+	if err != nil {
+		slog.Error("test email", "user", userID(r), "err", err)
+		// Mail server errors name the problem (e.g. a rejected password) without secrets.
+		writeError(w, http.StatusBadGateway, "Couldn't send: "+err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

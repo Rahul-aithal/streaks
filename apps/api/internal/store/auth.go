@@ -19,16 +19,17 @@ type User struct {
 	NeedsReconnect  bool
 	GitHubLogin     *string
 	GitHubTokenEnc  *string
+	EmailReminders  bool
 	CreatedAt       time.Time
 }
 
 const userColumns = `u.id, u.google_sub, u.email, u.name, u.avatar_url, u.refresh_token_enc,
-	u.needs_reconnect, u.github_login, u.github_token_enc, u.created_at`
+	u.needs_reconnect, u.github_login, u.github_token_enc, u.email_reminders, u.created_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.GoogleSub, &u.Email, &u.Name, &u.AvatarURL, &u.RefreshTokenEnc,
-		&u.NeedsReconnect, &u.GitHubLogin, &u.GitHubTokenEnc, &u.CreatedAt)
+		&u.NeedsReconnect, &u.GitHubLogin, &u.GitHubTokenEnc, &u.EmailReminders, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}

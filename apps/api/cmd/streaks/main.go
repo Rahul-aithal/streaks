@@ -22,6 +22,8 @@ import (
 	"streaks/internal/github"
 	"streaks/internal/gtasks"
 	"streaks/internal/httpapi"
+	"streaks/internal/mailer"
+	"streaks/internal/reminder"
 	"streaks/internal/secretbox"
 	"streaks/internal/store"
 	"streaks/internal/syncer"
@@ -94,9 +96,24 @@ func serve(cfg config.Config) error {
 	}
 	go sync.Run(ctx)
 
+	var reminders *reminder.Reminder
+	if cfg.SMTPHost != "" {
+		reminders = &reminder.Reminder{
+			Store: st, Sync: sync, Now: time.Now, AppURL: cfg.WebOrigin(),
+			Mail: &mailer.SMTP{
+				Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername,
+				Password: cfg.SMTPPassword, From: cfg.EmailFrom,
+			},
+		}
+		go reminders.Run(ctx)
+	} else {
+		slog.Info("reminder emails are off: SMTP_HOST is not set")
+	}
+
 	api := &httpapi.Server{
 		Store:         st,
 		Sync:          sync,
+		Reminders:     reminders,
 		Now:           time.Now,
 		WebOrigin:     cfg.WebOrigin(),
 		SecureCookies: cfg.SecureCookies(),
