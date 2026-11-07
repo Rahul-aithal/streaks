@@ -278,6 +278,13 @@ type accountJSON struct {
 	Active    bool   `json:"active"`
 }
 
+type githubAccountJSON struct {
+	ID            int64      `json:"id"`
+	Login         string     `json:"login"`
+	LastSuccessAt *time.Time `json:"last_success_at"`
+	LastError     *string    `json:"last_error"`
+}
+
 // me deliberately exposes no encrypted tokens.
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFrom(r)
@@ -296,6 +303,15 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	githubAccounts, err := s.Store.ListGitHubAccounts(r.Context(), sess.user.ID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	github := make([]githubAccountJSON, 0, len(githubAccounts))
+	for _, a := range githubAccounts {
+		github = append(github, githubAccountJSON{ID: a.ID, Login: a.Login, LastSuccessAt: a.LastSuccessAt, LastError: a.LastError})
+	}
 	list := make([]accountJSON, 0, len(accounts))
 	for _, a := range accounts {
 		list = append(list, accountJSON{
@@ -306,7 +322,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		"accounts": list,
 		"google":   map[string]any{"needs_reconnect": sess.user.NeedsReconnect, "sync": googleRun},
 		"github": map[string]any{
-			"login": sess.user.GitHubLogin, "sync": githubRun, "connect_enabled": s.Sync.GitHubOAuth != nil,
+			"accounts": github, "sync": githubRun, "connect_enabled": s.Sync.GitHubOAuth != nil,
 		},
 		"email": map[string]any{
 			"address": sess.user.Email, "enabled": sess.user.EmailReminders, "configured": s.Reminders != nil,
@@ -459,7 +475,16 @@ func (s *Server) linkGitHub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) unlinkGitHub(w http.ResponseWriter, r *http.Request) {
-	if err := s.Sync.UnlinkGitHub(r.Context(), sessionFrom(r).user); err != nil {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	err := s.Sync.UnlinkGitHub(r.Context(), userID(r), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "GitHub account not found")
+		return
+	}
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}

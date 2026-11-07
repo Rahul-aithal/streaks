@@ -63,7 +63,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /settings/github", s.linkGitHub)
 	api.HandleFunc("PUT /settings/email", s.setEmailReminders)
 	api.HandleFunc("POST /settings/email/test", s.sendTestEmail)
-	api.HandleFunc("DELETE /settings/github", s.unlinkGitHub)
+	api.HandleFunc("DELETE /settings/github/{id}", s.unlinkGitHub)
 
 	s.oauthStates = newStateStore(s.Now)
 
@@ -539,6 +539,11 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	githubAccounts, err := s.Store.ListGitHubAccounts(ctx, id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	githubRun, err := s.Store.GetSyncRun(ctx, id, syncer.KindGitHub)
 	if err != nil {
 		writeStoreError(w, err)
@@ -594,7 +599,7 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 			"daily": streak.ComputeDaily(dailyInputs(habits), today),
 		},
 		"github": map[string]any{
-			"linked":        sess.user.GitHubLogin != nil,
+			"linked":        len(githubAccounts) > 0,
 			"contributions": counts[today],
 			"sync":          githubRun,
 		},

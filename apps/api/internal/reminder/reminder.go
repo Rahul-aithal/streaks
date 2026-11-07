@@ -128,8 +128,8 @@ func (r *Reminder) send(ctx context.Context, u store.User, day streak.Day, slot 
 	ctx, cancel := context.WithTimeout(ctx, sendLimit)
 	defer cancel()
 	// GitHub habits are checked in by the sync, so refresh before reporting them.
-	if u.GitHubTokenEnc != nil {
-		if err := r.Sync.Sync(ctx, u.ID, syncer.KindGitHub); err != nil {
+	if r.Sync != nil {
+		if err := r.Sync.Sync(ctx, u.ID, syncer.KindGitHub); err != nil && !errors.Is(err, syncer.ErrNotConfigured) {
 			slog.Warn("GitHub sync before reminder", "user", u.ID, "err", err)
 		}
 	}

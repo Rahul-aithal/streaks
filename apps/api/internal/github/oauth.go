@@ -40,6 +40,8 @@ func (o *OAuth) AuthorizeURL(state string) string {
 		"client_id":    {o.ClientID},
 		"redirect_uri": {o.RedirectURI},
 		"state":        {state},
+		// Lets someone signed in to several GitHub accounts choose which to connect.
+		"prompt": {"select_account"},
 	}.Encode()
 }
 

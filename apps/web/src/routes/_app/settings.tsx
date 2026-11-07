@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { api, GITHUB_CONNECT_URL, GITHUB_TOKEN_URL, GOOGLE_RECONNECT_URL, type SyncRun } from "@/lib/api"
+import { api, type GitHubAccount, GITHUB_CONNECT_URL, GITHUB_TOKEN_URL, GOOGLE_RECONNECT_URL, type SyncRun } from "@/lib/api"
 import { formatInstant } from "@/lib/dates"
 import { useApiMutation, useSessionChange } from "@/lib/use-api-mutation"
 import { useMe } from "@/lib/use-me"
@@ -80,14 +80,14 @@ function GitHubCard() {
   const { github } = useMe()
   const { github: result } = Route.useSearch()
   const navigate = Route.useNavigate()
-  const unlink = useApiMutation(api.unlinkGitHub)
+  const connected = github.accounts.length > 0
 
   // Show the outcome of the trip to GitHub once, then tidy the URL.
   useEffect(() => {
     if (!result) return
     // The fixed ID stops a re-run of this effect from showing it twice.
     const options = { id: "github-result" }
-    if (result === "connected") toast.success("GitHub connected.", options)
+    if (result === "connected") toast.success("GitHub account connected.", options)
     else toast.error(GITHUB_RESULTS[result] ?? GITHUB_RESULTS.failed, options)
     void navigate({ search: {}, replace: true })
   }, [result, navigate])
@@ -97,52 +97,68 @@ function GitHubCard() {
       <CardHeader>
         <CardTitle>GitHub</CardTitle>
         <CardDescription>
-          A GitHub habit is completed automatically on days you push or open a pull request.
+          Your GitHub activity habit is completed on days you push or open a pull request from any connected account.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {github.login ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="flex size-10 items-center justify-center rounded-full bg-muted">
-              <GitHubIcon className="size-5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">{github.login}</p>
-              <SyncStatus run={github.sync} />
-            </div>
-            <ConfirmButton
-              title="Disconnect GitHub?"
-              description="Syncing stops and access is removed. Your past activity and check-ins are kept."
-              confirmLabel="Disconnect"
-              disabled={unlink.isPending}
-              onConfirm={() => unlink.mutate(undefined)}
-            >
-              Disconnect
-            </ConfirmButton>
-          </div>
-        ) : github.connect_enabled ? (
+        {connected && (
+          <ul className="flex flex-col divide-y rounded-lg border">
+            {github.accounts.map((account) => (
+              <GitHubAccountRow key={account.id} account={account} />
+            ))}
+          </ul>
+        )}
+        {github.connect_enabled ? (
           <div className="flex flex-col items-start gap-2">
-            <Button asChild>
+            <Button asChild variant={connected ? "outline" : "default"}>
               {/* A real navigation, because this leaves the app for GitHub. */}
               <a href={GITHUB_CONNECT_URL}>
                 <GitHubIcon className="size-4" />
-                Connect GitHub
+                {connected ? "Connect another account" : "Connect GitHub"}
               </a>
             </Button>
-            <p className="text-xs text-muted-foreground">Counts activity in your public repositories.</p>
+            <p className="text-xs text-muted-foreground">
+              {connected
+                ? "GitHub lets you pick an account if you're signed in to more than one on github.com. Otherwise, sign in there to the other account first."
+                : "Counts activity in your public repositories."}
+            </p>
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
             To get a Connect button, add a GitHub OAuth app to <code>.env</code> (see the README). Or use a token below.
           </p>
         )}
-        <GitHubTokenForm linked={github.login !== null} defaultOpen={!github.login && !github.connect_enabled} />
+        <GitHubTokenForm defaultOpen={!connected && !github.connect_enabled} />
       </CardContent>
     </Card>
   )
 }
 
-function GitHubTokenForm({ linked, defaultOpen }: { linked: boolean; defaultOpen: boolean }) {
+function GitHubAccountRow({ account }: { account: GitHubAccount }) {
+  const unlink = useApiMutation(() => api.unlinkGitHub(account.id))
+  return (
+    <li className="flex flex-wrap items-center gap-3 p-3">
+      <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+        <GitHubIcon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium">{account.login}</p>
+        <SyncStatus run={account} />
+      </div>
+      <ConfirmButton
+        title={`Disconnect ${account.login}?`}
+        description="New activity from this account stops counting, and its access is removed. Past activity and check-ins are kept."
+        confirmLabel="Disconnect"
+        disabled={unlink.isPending}
+        onConfirm={() => unlink.mutate(undefined)}
+      >
+        Disconnect
+      </ConfirmButton>
+    </li>
+  )
+}
+
+function GitHubTokenForm({ defaultOpen }: { defaultOpen: boolean }) {
   const [token, setToken] = useState("")
   const link = useApiMutation(
     (value: string) => api.linkGitHub(value),
@@ -159,7 +175,7 @@ function GitHubTokenForm({ linked, defaultOpen }: { linked: boolean; defaultOpen
   return (
     <details open={defaultOpen} className="text-sm">
       <summary className="cursor-pointer text-muted-foreground">
-        {linked ? "Replace with a token" : "Include private repositories with a token"}
+        Connect with a token instead (includes private repositories)
       </summary>
       <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
         <Label htmlFor="github-token">Personal access token</Label>

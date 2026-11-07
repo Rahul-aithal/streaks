@@ -17,19 +17,17 @@ type User struct {
 	AvatarURL       string
 	RefreshTokenEnc string
 	NeedsReconnect  bool
-	GitHubLogin     *string
-	GitHubTokenEnc  *string
 	EmailReminders  bool
 	CreatedAt       time.Time
 }
 
 const userColumns = `u.id, u.google_sub, u.email, u.name, u.avatar_url, u.refresh_token_enc,
-	u.needs_reconnect, u.github_login, u.github_token_enc, u.email_reminders, u.created_at`
+	u.needs_reconnect, u.email_reminders, u.created_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.GoogleSub, &u.Email, &u.Name, &u.AvatarURL, &u.RefreshTokenEnc,
-		&u.NeedsReconnect, &u.GitHubLogin, &u.GitHubTokenEnc, &u.EmailReminders, &u.CreatedAt)
+		&u.NeedsReconnect, &u.EmailReminders, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}
@@ -104,28 +102,6 @@ func (s *Store) SetNeedsReconnect(ctx context.Context, userID int64, needed bool
 	return s.run(ctx, func(ctx context.Context) error {
 		_, err := s.pool.Exec(ctx, `UPDATE users SET needs_reconnect = $2, updated_at = now()
 			WHERE id = $1 AND needs_reconnect <> $2`, userID, needed)
-		return err
-	})
-}
-
-// SetGitHub links a GitHub account. Its events and check-ins are kept across
-// token changes because they're keyed to the Streaks user.
-func (s *Store) SetGitHub(ctx context.Context, userID int64, login, tokenEnc string) error {
-	return s.run(ctx, func(ctx context.Context) error {
-		_, err := s.pool.Exec(ctx, `UPDATE users SET github_login = $2, github_token_enc = $3, updated_at = now()
-			WHERE id = $1`, userID, login, tokenEnc)
-		return err
-	})
-}
-
-// ClearGitHub unlinks GitHub. Past activity and check-ins stay.
-func (s *Store) ClearGitHub(ctx context.Context, userID int64) error {
-	return s.run(ctx, func(ctx context.Context) error {
-		if _, err := s.pool.Exec(ctx, `UPDATE users SET github_login = NULL, github_token_enc = NULL,
-			updated_at = now() WHERE id = $1`, userID); err != nil {
-			return err
-		}
-		_, err := s.pool.Exec(ctx, `DELETE FROM sync_runs WHERE user_id = $1 AND kind = 'github'`, userID)
 		return err
 	})
 }

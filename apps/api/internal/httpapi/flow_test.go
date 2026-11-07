@@ -37,6 +37,7 @@ type fakeServices struct {
 	noRefresh map[string]bool // Codes that return no refresh token, like a returning user.
 	noScope   map[string]bool // Codes where the user unticked Tasks.
 	ghIssued  int             // GitHub tokens handed out.
+	ghDead    map[string]bool // GitHub tokens the events API now refuses.
 }
 
 func (f *fakeServices) server() *httptest.Server {
@@ -118,10 +119,18 @@ func (f *fakeServices) server() *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		fmt.Fprintf(w, `{"login":"%s"}`, strings.TrimPrefix(token, "gh-"))
+		login, _, _ := strings.Cut(strings.TrimPrefix(token, "gh-"), "~") // gh-<login>~<n> is a newer token.
+		fmt.Fprintf(w, `{"login":"%s"}`, login)
 	})
 	mux.HandleFunc("GET /users/{login}/events", func(w http.ResponseWriter, r *http.Request) {
 		login := r.PathValue("login")
+		f.mu.Lock()
+		dead := f.ghDead[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		f.mu.Unlock()
+		if dead {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		// All users deliberately share an event ID. 2026-11-04 09:00 IST.
 		fmt.Fprintf(w, `[{"id":"e1","type":"PushEvent","created_at":"2026-11-04T03:30:00Z","payload":{}},
 			{"id":"%s-2","type":"PushEvent","created_at":"2026-11-04T04:00:00Z","payload":{}}]`, login)
@@ -244,8 +253,20 @@ type meResponse struct {
 		NeedsReconnect bool `json:"needs_reconnect"`
 	}
 	GitHub struct {
-		Login *string
+		Accounts []struct {
+			ID        int64
+			Login     string
+			LastError *string `json:"last_error"`
+		}
 	}
+}
+
+func (m meResponse) githubLogins() string {
+	var logins []string
+	for _, a := range m.GitHub.Accounts {
+		logins = append(logins, a.Login)
+	}
+	return strings.Join(logins, ",")
 }
 
 func (b *browser) me() meResponse {
@@ -336,7 +357,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	defer st.Close()
 
 	fake := &fakeServices{
-		revoked: map[string]bool{}, dead: map[string]bool{},
+		revoked: map[string]bool{}, dead: map[string]bool{}, ghDead: map[string]bool{},
 		noRefresh: map[string]bool{"code-alice-return": true, "code-dave-first": true, "code-bob-return": true},
 		noScope:   map[string]bool{"code-erin": true},
 	}
@@ -495,8 +516,8 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 			t.Fatalf("link github: %d", code)
 		}
 	}
-	if login := b.me().GitHub.Login; login == nil || *login != "alicehub" {
-		t.Errorf("github login = %v", login)
+	if got := b.me().githubLogins(); got != "alicehub" {
+		t.Errorf("github accounts = %q", got)
 	}
 	s := b.summary()
 	if s.GitHub.Contributions != 2 {
@@ -533,8 +554,18 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 		if strings.Contains(u.RefreshTokenEnc, "rt-") {
 			t.Errorf("google token in plaintext: %q", u.RefreshTokenEnc)
 		}
-		if u.GitHubTokenEnc != nil && strings.Contains(*u.GitHubTokenEnc, "gh-") {
-			t.Errorf("github token in plaintext: %q", *u.GitHubTokenEnc)
+	}
+	rows, err := conn.Query(ctx, `SELECT token_enc FROM github_accounts`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(sealed) != 2 {
+		t.Fatalf("github tokens = %d, %v", len(sealed), err)
+	}
+	for _, token := range sealed {
+		if strings.Contains(token, "gh-") {
+			t.Errorf("github token in plaintext: %q", token)
 		}
 	}
 	var raw json.RawMessage
@@ -708,8 +739,8 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if loc := carol.githubCallback("state=" + state + "&code=ghcode-carolhub"); !strings.Contains(loc, "github=connected") {
 		t.Errorf("connect: %q", loc)
 	}
-	if login := carol.me().GitHub.Login; login == nil || *login != "carolhub" {
-		t.Errorf("connected login = %v", login)
+	if got := carol.me().githubLogins(); got != "carolhub" {
+		t.Errorf("connected accounts = %q", got)
 	}
 	if loc := carol.githubCallback("state=" + state + "&code=ghcode-mallory"); !strings.Contains(loc, "github=expired") {
 		t.Errorf("state replayed: %q", loc)
@@ -718,10 +749,35 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 		t.Error("connecting should sync straight away")
 	}
 
-	// Connecting a different GitHub account revokes the token it replaces.
+	// The account picker is requested, so a second GitHub account can be chosen.
+	if loc, _ := carol.startGitHub(); !strings.Contains(loc, "prompt=select_account") {
+		t.Errorf("no account picker: %q", loc)
+	}
+	// A second GitHub account is added, not swapped in, and activity is pooled.
 	_, state = carol.startGitHub()
 	if loc := carol.githubCallback("state=" + state + "&code=ghcode-carol2"); !strings.Contains(loc, "github=connected") {
+		t.Errorf("second account: %q", loc)
+	}
+	if got := carol.me().githubLogins(); got != "carolhub,carol2" {
+		t.Errorf("accounts after adding one = %q", got)
+	}
+	if got := carol.summary().GitHub.Contributions; got != 3 { // e1 is shared, plus one event each.
+		t.Errorf("pooled contributions = %d", got)
+	}
+	fake.mu.Lock()
+	revokedEarly := fake.revoked["gh-carolhub"]
+	fake.mu.Unlock()
+	if revokedEarly {
+		t.Error("adding an account must not revoke another's token")
+	}
+
+	// Reconnecting an account already linked replaces its token and revokes the old one.
+	_, state = carol.startGitHub()
+	if loc := carol.githubCallback("state=" + state + "&code=ghcode-carolhub~2"); !strings.Contains(loc, "github=connected") {
 		t.Errorf("reconnect: %q", loc)
+	}
+	if got := carol.me().githubLogins(); got != "carolhub,carol2" {
+		t.Errorf("accounts after reconnecting = %q", got)
 	}
 	fake.mu.Lock()
 	replaced := fake.revoked["gh-carolhub"]
@@ -729,6 +785,26 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if !replaced {
 		t.Error("the replaced token should be revoked")
 	}
+
+	// One account failing doesn't stop the other's activity counting.
+	fake.mu.Lock()
+	fake.ghDead["gh-carol2"] = true
+	fake.mu.Unlock()
+	var syncErr struct{ Error string }
+	if code := carol.call(http.MethodPost, "/sync/github", nil, &syncErr); code != http.StatusBadGateway || !strings.Contains(syncErr.Error, "carol2") {
+		t.Errorf("partial failure: %d %q", code, syncErr.Error)
+	}
+	for _, a := range carol.me().GitHub.Accounts {
+		if failed := a.LastError != nil; failed != (a.Login == "carol2") {
+			t.Errorf("%s last error = %v", a.Login, a.LastError)
+		}
+	}
+	if got := carol.summary().GitHub.Contributions; got != 3 {
+		t.Errorf("contributions after a partial failure = %d", got)
+	}
+	fake.mu.Lock()
+	fake.ghDead["gh-carol2"] = false
+	fake.mu.Unlock()
 
 	// A connection started by one account can't land on another: swapping accounts
 	// mid-flow must not link GitHub to the wrong one.
@@ -739,12 +815,26 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if loc := swap.githubCallback("state=" + state + "&code=ghcode-erinhub"); !strings.Contains(loc, "github=expired") {
 		t.Errorf("state for another account: %q", loc)
 	}
-	if login := swap.me().GitHub.Login; login != nil {
-		t.Errorf("frank got erin's GitHub: %v", *login)
+	if got := swap.me().githubLogins(); got != "" {
+		t.Errorf("frank got erin's GitHub: %q", got)
 	}
 
-	// Disconnecting revokes the token.
-	if code := carol.call(http.MethodDelete, "/settings/github", nil, nil); code != http.StatusNoContent {
+	// Disconnecting one account revokes its token and leaves the other.
+	var carol2 int64
+	for _, a := range carol.me().GitHub.Accounts {
+		if a.Login == "carol2" {
+			carol2 = a.ID
+		}
+	}
+	var aliceAccount int64
+	if err := conn.QueryRow(ctx, `SELECT g.id FROM github_accounts g JOIN users u ON u.id = g.user_id
+		WHERE u.google_sub = 'sub-alice'`).Scan(&aliceAccount); err != nil {
+		t.Fatal(err)
+	}
+	if code := carol.call(http.MethodDelete, fmt.Sprintf("/settings/github/%d", aliceAccount), nil, nil); code != http.StatusNotFound {
+		t.Errorf("disconnect another user's account: %d", code)
+	}
+	if code := carol.call(http.MethodDelete, fmt.Sprintf("/settings/github/%d", carol2), nil, nil); code != http.StatusNoContent {
 		t.Errorf("disconnect: %d", code)
 	}
 	fake.mu.Lock()
@@ -753,8 +843,11 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if !unlinked {
 		t.Error("disconnecting should revoke the token")
 	}
-	if carol.me().GitHub.Login != nil {
-		t.Error("still linked after disconnecting")
+	if got := carol.me().githubLogins(); got != "carolhub" {
+		t.Errorf("accounts after disconnecting one = %q", got)
+	}
+	if code := carol.call(http.MethodDelete, fmt.Sprintf("/settings/github/%d", carol2), nil, nil); code != http.StatusNotFound {
+		t.Errorf("disconnect twice: %d", code)
 	}
 
 	// Without an OAuth app, the button has nowhere to go and says so.

@@ -4,6 +4,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -106,8 +107,15 @@ func (s *Syncer) Sync(ctx context.Context, userID int64, kind string) error {
 }
 
 func (s *Syncer) syncUser(ctx context.Context, u store.User, kind string) error {
-	if kind == KindGitHub && u.GitHubTokenEnc == nil {
-		return ErrNotConfigured
+	var accounts []store.GitHubAccount
+	if kind == KindGitHub {
+		var err error
+		if accounts, err = s.Store.ListGitHubAccounts(ctx, u.ID); err != nil {
+			return err
+		}
+		if len(accounts) == 0 {
+			return ErrNotConfigured
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, syncLimit)
 	defer cancel()
@@ -118,7 +126,7 @@ func (s *Syncer) syncUser(ctx context.Context, u store.User, kind string) error 
 	var err error
 	switch kind {
 	case KindGitHub:
-		err = s.syncGitHub(ctx, u)
+		err = s.syncGitHub(ctx, u, accounts)
 	case KindGoogle:
 		err = s.syncGoogle(ctx, u)
 		reconnect := errors.Is(err, gtasks.ErrReconnect) || errors.Is(err, ErrUnreadableToken)
@@ -137,20 +145,34 @@ func (s *Syncer) syncUser(ctx context.Context, u store.User, kind string) error 
 	return err
 }
 
-func (s *Syncer) syncGitHub(ctx context.Context, u store.User) error {
-	token, err := s.Box.Open(*u.GitHubTokenEnc)
-	if err != nil {
-		return ErrUnreadableToken
+// syncGitHub pools activity from every connected account. One account failing
+// doesn't stop the others from counting.
+func (s *Syncer) syncGitHub(ctx context.Context, u store.User, accounts []store.GitHubAccount) error {
+	var events []store.GitHubEvent
+	var errs []error
+	for _, a := range accounts {
+		got, err := s.fetchGitHub(ctx, a)
+		if recordErr := s.Store.RecordGitHubAccountSync(ctx, a.ID, err); recordErr != nil {
+			slog.Warn("record GitHub account sync", "account", a.ID, "err", recordErr)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", a.Login, err))
+			continue
+		}
+		events = append(events, got...)
 	}
-	login := ""
-	if u.GitHubLogin != nil {
-		login = *u.GitHubLogin
-	}
-	events, err := github.NewClient(s.GitHubBaseURL, token).FetchActivity(ctx, login)
-	if err != nil {
+	if err := s.Store.SaveGitHubEvents(ctx, u.ID, events); err != nil {
 		return err
 	}
-	return s.Store.SaveGitHubEvents(ctx, u.ID, events)
+	return errors.Join(errs...)
+}
+
+func (s *Syncer) fetchGitHub(ctx context.Context, a store.GitHubAccount) ([]store.GitHubEvent, error) {
+	token, err := s.Box.Open(a.TokenEnc)
+	if err != nil {
+		return nil, ErrUnreadableToken
+	}
+	return github.NewClient(s.GitHubBaseURL, token).FetchActivity(ctx, a.Login)
 }
 
 func (s *Syncer) syncGoogle(ctx context.Context, u store.User) error {
@@ -168,13 +190,10 @@ func (s *Syncer) syncGoogle(ctx context.Context, u store.User) error {
 }
 
 // LinkGitHub verifies a token, stores it encrypted, and runs a first sync. A
-// failed first sync is recorded but doesn't undo the link.
+// token for an account that's already connected replaces the old one. A failed
+// first sync is recorded but doesn't undo the link.
 func (s *Syncer) LinkGitHub(ctx context.Context, userID int64, token string) (string, error) {
 	login, err := github.NewClient(s.GitHubBaseURL, token).Login(ctx)
-	if err != nil {
-		return "", err
-	}
-	u, err := s.Store.GetUser(ctx, userID)
 	if err != nil {
 		return "", err
 	}
@@ -182,11 +201,14 @@ func (s *Syncer) LinkGitHub(ctx context.Context, userID int64, token string) (st
 	if err != nil {
 		return "", err
 	}
-	if err := s.Store.SetGitHub(ctx, userID, login, sealed); err != nil {
+	replaced, err := s.Store.SaveGitHubAccount(ctx, userID, login, sealed)
+	if err != nil {
 		return "", err
 	}
-	if old, err := s.openGitHubToken(u); err == nil && old != token {
-		s.revokeGitHub(ctx, u.ID, old)
+	if replaced != nil {
+		if old, err := s.Box.Open(*replaced); err == nil && old != token {
+			s.revokeGitHub(ctx, userID, old)
+		}
 	}
 	if err := s.Sync(ctx, userID, KindGitHub); err != nil {
 		slog.Error("first GitHub sync", "user", userID, "err", err)
@@ -206,23 +228,17 @@ func (s *Syncer) ConnectGitHub(ctx context.Context, userID int64, code string) (
 	return s.LinkGitHub(ctx, userID, token)
 }
 
-// UnlinkGitHub removes the stored token, then revokes it. A failed revoke doesn't
-// block unlinking, because Streaks no longer holds the token either way.
-func (s *Syncer) UnlinkGitHub(ctx context.Context, u store.User) error {
-	if err := s.Store.ClearGitHub(ctx, u.ID); err != nil {
+// UnlinkGitHub disconnects one account, then revokes its token. A failed revoke
+// doesn't block it, because Streaks no longer holds the token either way.
+func (s *Syncer) UnlinkGitHub(ctx context.Context, userID, accountID int64) error {
+	a, err := s.Store.DeleteGitHubAccount(ctx, userID, accountID)
+	if err != nil {
 		return err
 	}
-	if token, err := s.openGitHubToken(u); err == nil {
-		s.revokeGitHub(ctx, u.ID, token)
+	if token, err := s.Box.Open(a.TokenEnc); err == nil {
+		s.revokeGitHub(ctx, userID, token)
 	}
 	return nil
-}
-
-func (s *Syncer) openGitHubToken(u store.User) (string, error) {
-	if u.GitHubTokenEnc == nil {
-		return "", ErrNotConfigured
-	}
-	return s.Box.Open(*u.GitHubTokenEnc)
 }
 
 func (s *Syncer) revokeGitHub(ctx context.Context, userID int64, token string) {
@@ -248,8 +264,14 @@ func (s *Syncer) DeleteAccount(ctx context.Context, u store.User) error {
 	} else if err := s.Google.Revoke(ctx, token); err != nil {
 		slog.Warn("revoke failed; remove access at myaccount.google.com/permissions", "user", u.ID, "err", err)
 	}
-	if token, err := s.openGitHubToken(u); err == nil {
-		s.revokeGitHub(ctx, u.ID, token)
+	accounts, err := s.Store.ListGitHubAccounts(ctx, u.ID)
+	if err != nil {
+		slog.Warn("list GitHub accounts to revoke", "user", u.ID, "err", err)
+	}
+	for _, a := range accounts {
+		if token, err := s.Box.Open(a.TokenEnc); err == nil {
+			s.revokeGitHub(ctx, u.ID, token)
+		}
 	}
 	return s.Store.DeleteUser(ctx, u.ID)
 }

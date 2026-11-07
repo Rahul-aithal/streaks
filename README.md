@@ -58,7 +58,7 @@ Do this once for the Connect GitHub button:
 
 2. Generate a client secret, then set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`.
 
-Each Streaks account then connects its own GitHub account under **Settings**. It connects whichever account you're signed in to on github.com.
+Each Streaks account then connects its own GitHub accounts under **Settings**, as many as you like. Activity from all of them is pooled, so the GitHub activity habit counts a push or PR from any of them. To add another, use **Connect another account**: GitHub shows an account picker if you're signed in to several accounts on github.com; otherwise, sign in there to the other account first. Connecting an account that's already linked just refreshes its token.
 
 Connect asks for no permissions, so it **only counts public repositories**. The OAuth permission GitHub documents for private repositories is `repo`, which also allows writing to your code, so Streaks doesn't ask for it.
 
@@ -182,7 +182,7 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 - **Sign-in:** any Google account that gets past Google's consent screen can sign in, as long as Google has verified its email. While the Google app is in Testing, that means only its test users. Publishing the app would let anyone with a Google account in, each with their own empty account.
 - **Sessions:** an HttpOnly, SameSite=Lax cookie that lasts 30 days. Only its SHA-256 hash is stored, and signing out invalidates it on the server.
 - **Isolation:** every data query is scoped to the signed-in user. Another user's habit returns 404.
-- **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them. Disconnecting GitHub or deleting an account revokes a connected token. Connect requests no GitHub scopes.
+- **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them. Disconnecting a GitHub account or deleting a Streaks account revokes the connected tokens. Connect requests no GitHub scopes.
 - **Requests:** state-changing requests from another origin are refused. The Google callback needs a one-time `state` value that matches a cookie in the same browser.
 
 The API only listens on loopback. To host it, serve it over HTTPS and update `GOOGLE_REDIRECT_URI` and the OAuth client; cookies then become `Secure` automatically.

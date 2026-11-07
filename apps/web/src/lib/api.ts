@@ -47,10 +47,17 @@ export interface Account {
   active: boolean
 }
 
+export interface GitHubAccount {
+  id: number
+  login: string
+  last_success_at: string | null
+  last_error: string | null
+}
+
 export interface Me {
   accounts: Account[]
   google: { needs_reconnect: boolean; sync: SyncRun }
-  github: { login: string | null; sync: SyncRun; connect_enabled: boolean }
+  github: { accounts: GitHubAccount[]; sync: SyncRun; connect_enabled: boolean }
   email: { address: string; enabled: boolean; configured: boolean }
 }
 
@@ -134,7 +141,7 @@ export const api = {
   signOutAll: () => request<void>("POST", "/auth/sign-out-all"),
   deleteAccount: () => request<{ signed_in: boolean }>("DELETE", "/account"),
   linkGitHub: (token: string) => request<{ login: string }>("PUT", "/settings/github", { token }),
-  unlinkGitHub: () => request<void>("DELETE", "/settings/github"),
+  unlinkGitHub: (id: number) => request<void>("DELETE", `/settings/github/${id}`),
   setEmailReminders: (enabled: boolean) => request<void>("PUT", "/settings/email", { enabled }),
   sendTestEmail: () => request<void>("POST", "/settings/email/test"),
 
