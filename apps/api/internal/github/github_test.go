@@ -9,71 +9,76 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestFetchActivityFiltersEvents(t *testing.T) {
+func TestContributions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/graphql" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
 			t.Errorf("Authorization = %q", got)
 		}
-		if r.URL.Path != "/users/me/events" {
-			t.Errorf("path = %q", r.URL.Path)
+		var req struct {
+			Query     string
+			Variables map[string]string
 		}
-		fmt.Fprint(w, `[
-			{"id":"1","type":"PushEvent","created_at":"2026-11-03T18:30:00Z","payload":{"ref":"refs/heads/x"}},
-			{"id":"2","type":"PullRequestEvent","created_at":"2026-11-03T10:00:00Z","payload":{"action":"opened"}},
-			{"id":"3","type":"PullRequestEvent","created_at":"2026-11-03T10:00:00Z","payload":{"action":"closed"}},
-			{"id":"4","type":"WatchEvent","created_at":"2026-11-03T10:00:00Z","payload":{"action":"started"}}
-		]`)
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Variables["login"] != "me" || !strings.Contains(req.Query, "contributionCalendar") {
+			t.Errorf("request = %+v", req)
+		}
+		from, _ := time.Parse(time.RFC3339, req.Variables["from"])
+		to, _ := time.Parse(time.RFC3339, req.Variables["to"])
+		if span := to.Sub(from); span > 365*24*time.Hour {
+			t.Errorf("range %v is longer than GitHub allows", span)
+		}
+		fmt.Fprint(w, `{"data":{"user":{"contributionsCollection":{"contributionCalendar":{"weeks":[
+			{"contributionDays":[{"date":"2026-11-01","contributionCount":35},{"date":"2026-11-02","contributionCount":0}]},
+			{"contributionDays":[{"date":"2026-11-07","contributionCount":1}]}]}}}}}`)
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "tok")
-	got, err := c.FetchActivity(context.Background(), "me")
+	now := time.Date(2026, 11, 7, 13, 0, 0, 0, time.UTC)
+	days, from, to, err := NewClient(srv.URL, "tok").Contributions(context.Background(), "me", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].ID != "1" || got[1].ID != "2" {
-		t.Errorf("got %+v, want events 1 and 2", got)
+	if len(days) != 2 || days[0].Day.String() != "2026-11-01" || days[0].Count != 35 || days[1].Count != 1 {
+		t.Errorf("days = %+v (days without contributions should be left out)", days)
+	}
+	if to.String() != "2026-11-07" || from.String() != "2025-11-08" {
+		t.Errorf("range = %s..%s", from, to)
 	}
 }
 
-func TestFetchActivityPagination(t *testing.T) {
-	var pages []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		page := r.URL.Query().Get("page")
-		pages = append(pages, page)
-		if page == "2" {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			return
-		}
-		events := make([]map[string]any, perPage)
-		for i := range events {
-			events[i] = map[string]any{"id": fmt.Sprint(i), "type": "PushEvent", "created_at": "2026-11-03T10:00:00Z"}
-		}
-		_ = json.NewEncoder(w).Encode(events)
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, "tok")
-	got, err := c.FetchActivity(context.Background(), "me")
-	if err != nil {
-		t.Fatal(err)
+func TestContributionsErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"rejected token", http.StatusUnauthorized, `{"message":"Bad credentials"}`, ErrBadToken.Error()},
+		{"graphql error", http.StatusOK, `{"errors":[{"message":"rate limited"}]}`, "rate limited"},
+		{"unknown user", http.StatusOK, `{"data":{"user":null}}`, "not found"},
+		{"server error", http.StatusBadGateway, `oops`, "502"},
 	}
-	if len(got) != perPage || strings.Join(pages, ",") != "1,2" {
-		t.Errorf("events=%d pages=%v", len(got), pages)
-	}
-}
-
-func TestFetchActivityReportsFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad credentials", http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, "tok")
-	if _, err := c.FetchActivity(context.Background(), "me"); err == nil || !strings.Contains(err.Error(), "401") {
-		t.Errorf("err = %v, want a 401 error", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				fmt.Fprint(w, tt.body)
+			}))
+			defer srv.Close()
+			_, _, _, err := NewClient(srv.URL, "tok").Contributions(context.Background(), "me", time.Now())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want %q", err, tt.want)
+			}
+			if tt.status == http.StatusUnauthorized && !errors.Is(err, ErrBadToken) {
+				t.Error("a 401 should be ErrBadToken")
+			}
+		})
 	}
 }
 

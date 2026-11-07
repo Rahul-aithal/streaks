@@ -145,34 +145,32 @@ func (s *Syncer) syncUser(ctx context.Context, u store.User, kind string) error 
 	return err
 }
 
-// syncGitHub pools activity from every connected account. One account failing
-// doesn't stop the others from counting.
+// syncGitHub reads each connected account's contribution calendar. One account
+// failing doesn't stop the others from counting.
 func (s *Syncer) syncGitHub(ctx context.Context, u store.User, accounts []store.GitHubAccount) error {
-	var events []store.GitHubEvent
 	var errs []error
 	for _, a := range accounts {
-		got, err := s.fetchGitHub(ctx, a)
+		err := s.syncGitHubAccount(ctx, u, a)
 		if recordErr := s.Store.RecordGitHubAccountSync(ctx, a.ID, err); recordErr != nil {
 			slog.Warn("record GitHub account sync", "account", a.ID, "err", recordErr)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", a.Login, err))
-			continue
 		}
-		events = append(events, got...)
-	}
-	if err := s.Store.SaveGitHubEvents(ctx, u.ID, events); err != nil {
-		return err
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Syncer) fetchGitHub(ctx context.Context, a store.GitHubAccount) ([]store.GitHubEvent, error) {
+func (s *Syncer) syncGitHubAccount(ctx context.Context, u store.User, a store.GitHubAccount) error {
 	token, err := s.Box.Open(a.TokenEnc)
 	if err != nil {
-		return nil, ErrUnreadableToken
+		return ErrUnreadableToken
 	}
-	return github.NewClient(s.GitHubBaseURL, token).FetchActivity(ctx, a.Login)
+	days, from, to, err := github.NewClient(s.GitHubBaseURL, token).Contributions(ctx, a.Login, s.Now())
+	if err != nil {
+		return err
+	}
+	return s.Store.SaveGitHubContributions(ctx, u.ID, a.Login, from, to, days)
 }
 
 func (s *Syncer) syncGoogle(ctx context.Context, u store.User) error {

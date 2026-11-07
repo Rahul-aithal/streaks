@@ -58,11 +58,11 @@ Do this once for the Connect GitHub button:
 
 2. Generate a client secret, then set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`.
 
-Each Streaks account then connects its own GitHub accounts under **Settings**, as many as you like. Activity from all of them is pooled, so the GitHub activity habit counts a push or PR from any of them. To add another, use **Connect another account**: GitHub shows an account picker if you're signed in to several accounts on github.com; otherwise, sign in there to the other account first. Connecting an account that's already linked just refreshes its token.
+Each Streaks account then connects its own GitHub accounts under **Settings**, as many as you like. Their contributions are added together, so the GitHub activity habit counts a contribution from any of them. To add another, use **Connect another account**: GitHub shows an account picker if you're signed in to several accounts on github.com; otherwise, sign in there to the other account first. Connecting an account that's already linked just refreshes its token.
 
-Connect asks for no permissions, so it **only counts public repositories**. The OAuth permission GitHub documents for private repositories is `repo`, which also allows writing to your code, so Streaks doesn't ask for it.
+Connect asks for no permissions. Streaks reads each account's **contribution calendar**, the green graph on its profile. Work in private repositories counts only if that profile has **Private contributions** turned on: on GitHub, open your profile, then **Contribution settings → Private contributions**. Streaks only sees a count per day, never the private repositories themselves.
 
-To count private repositories, use a token instead: create a [fine-grained token](https://github.com/settings/personal-access-tokens/new), set **Events** to **Read-only** under **Account permissions**, and paste it under **Settings → GitHub**.
+Without an OAuth app, you can paste a [fine-grained token](https://github.com/settings/personal-access-tokens/new) under **Settings → GitHub** instead; it needs no extra permissions.
 
 ### 4. Reminder emails (optional)
 
@@ -138,7 +138,7 @@ cd apps/api && TEST_DATABASE_URL='postgres://...' go test -p 1 ./internal/store/
 1. Open **Habits → New habit**.
 2. Enter a name and choose a source:
    - **Manual:** you check it in from the Today view.
-   - **GitHub activity:** the sync checks it in on days you push to any repo or open a PR, including code pushed by tools like NeetCode's GitHub sync. It can't be checked in by hand. You can have any number of manual habits but only one active GitHub activity habit, since a second would count exactly the same pushes. To replace it, archive it first.
+   - **GitHub activity:** the sync checks it in on days with a contribution on GitHub, including commits from tools like NeetCode's GitHub sync. It can't be checked in by hand. You can have any number of manual habits but only one active GitHub activity habit, since a second would count exactly the same contributions. To replace it, archive it first.
 3. Pick target days, or leave them all off for every day.
 
 To backdate a check-in, open the habit and use **Recent days**. Today and the 2 days before it are allowed.
@@ -157,9 +157,11 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 
 **GitHub**
 
-- Activity comes from the REST Events API, which keeps 30 days and up to 300 events. Syncs run every `SYNC_INTERVAL` (6h by default), so nothing is missed unless the API stays off for more than 30 days.
-- The per-day count is **pushes plus PRs opened, not commits**, because push events don't include a commit count.
-- A day is based on when you pushed, in IST. A commit at 23:50 pushed at 00:10 counts for the next day.
+- Activity comes from each account's contribution calendar: the same numbers as the green graph on its GitHub profile. That counts commits to a repository's default branch made with an email address linked to the account, plus pull requests, issues and reviews.
+- Each sync reads the past year, so a new habit gets a year of history and nothing is missed while the API is off.
+- Days are as GitHub dates them. Their exact time zone isn't documented, so work between midnight and 5:30 AM IST may count for the previous day, just as on your GitHub graph.
+- With several accounts, the day's count is their total.
+- Check-ins are never removed, even if GitHub later lowers a day's count.
 
 **Google Tasks**
 
@@ -194,7 +196,7 @@ apps/api/cmd/streaks       Entry point: serve, migrate
 apps/api/internal/streak   Pure streak calculation and tests
 apps/api/internal/store    All SQL, with timeouts and one retry on connection errors
 apps/api/internal/httpapi  JSON routes, sign-in and sessions
-apps/api/internal/github   GitHub Events client
+apps/api/internal/github   GitHub contribution calendar and OAuth
 apps/api/internal/gtasks   Google sign-in, Tasks client and daily counts
 apps/api/internal/secretbox  Encryption for stored tokens
 apps/api/internal/reminder   Reminder email schedule and content

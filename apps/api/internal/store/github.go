@@ -81,6 +81,11 @@ func (s *Store) DeleteGitHubAccount(ctx context.Context, userID, id int64) (GitH
 		if err != nil {
 			return err
 		}
+		// Its counts go too; the check-ins they made stay.
+		if _, err := tx.Exec(ctx, `DELETE FROM github_contributions WHERE user_id = $1 AND login = $2`,
+			userID, a.Login); err != nil {
+			return err
+		}
 		// With nothing left to sync, the old sync status would only mislead.
 		_, err = tx.Exec(ctx, `DELETE FROM sync_runs WHERE user_id = $1 AND kind = 'github'
 			AND NOT EXISTS (SELECT 1 FROM github_accounts WHERE user_id = $1)`, userID)

@@ -33,7 +33,7 @@ export function HabitFormDialog({ habit, trigger }: { habit?: Habit; trigger: Re
 function HabitForm({ habit, onDone }: { habit?: Habit; onDone: () => void }) {
   const [name, setName] = useState(habit?.name ?? "")
   const [source, setSource] = useState<Source>(habit?.source ?? "manual")
-  // Only one active GitHub activity habit is allowed: it already counts every push and PR.
+  // Only one active GitHub activity habit is allowed: it already counts every contribution.
   const habits = useQuery({ queryKey: ["habits"], queryFn: api.habits, enabled: !habit })
   const githubHabit = habits.data?.find((h) => h.source === "github" && !h.archived)
   // All seven days and no days both mean "every day"; show that as no selection.
@@ -96,7 +96,7 @@ function HabitForm({ habit, onDone }: { habit?: Habit; onDone: () => void }) {
           </ToggleGroup>
           <p className="text-xs text-muted-foreground">
             {source === "github"
-              ? "Checked in automatically on days you push to any repo or open a PR. Connect GitHub in Settings."
+              ? "Checked in automatically on days with a contribution on GitHub, the green squares on your profile. Connect GitHub in Settings."
               : githubHabit
                 ? `You check it in yourself. Your GitHub activity habit is "${githubHabit.name}", and you can only have one.`
                 : "You check it in yourself."}

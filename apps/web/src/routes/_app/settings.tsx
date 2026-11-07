@@ -97,7 +97,7 @@ function GitHubCard() {
       <CardHeader>
         <CardTitle>GitHub</CardTitle>
         <CardDescription>
-          Your GitHub activity habit is completed on days you push or open a pull request from any connected account.
+          Your GitHub activity habit is completed on days with a contribution from any connected account: the green squares on your GitHub profile.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -120,7 +120,7 @@ function GitHubCard() {
             <p className="text-xs text-muted-foreground">
               {connected
                 ? "GitHub lets you pick an account if you're signed in to more than one on github.com. Otherwise, sign in there to the other account first."
-                : "Counts activity in your public repositories."}
+                : "To include work in private repositories, turn on Private contributions in your GitHub profile's Contribution settings."}
             </p>
           </div>
         ) : (
@@ -175,7 +175,7 @@ function GitHubTokenForm({ defaultOpen }: { defaultOpen: boolean }) {
   return (
     <details open={defaultOpen} className="text-sm">
       <summary className="cursor-pointer text-muted-foreground">
-        Connect with a token instead (includes private repositories)
+        Connect with a token instead
       </summary>
       <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
         <Label htmlFor="github-token">Personal access token</Label>
@@ -198,7 +198,7 @@ function GitHubTokenForm({ defaultOpen }: { defaultOpen: boolean }) {
             Create a fine-grained token
             <ExternalLink className="size-3" />
           </a>{" "}
-          with the Events user permission set to read-only. It's stored encrypted.
+          with no extra permissions. It's stored encrypted.
         </p>
       </form>
     </details>

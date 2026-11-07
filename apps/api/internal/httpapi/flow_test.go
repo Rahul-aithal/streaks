@@ -122,8 +122,9 @@ func (f *fakeServices) server() *httptest.Server {
 		login, _, _ := strings.Cut(strings.TrimPrefix(token, "gh-"), "~") // gh-<login>~<n> is a newer token.
 		fmt.Fprintf(w, `{"login":"%s"}`, login)
 	})
-	mux.HandleFunc("GET /users/{login}/events", func(w http.ResponseWriter, r *http.Request) {
-		login := r.PathValue("login")
+	mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Variables map[string]string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.mu.Lock()
 		dead := f.ghDead[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
 		f.mu.Unlock()
@@ -131,9 +132,13 @@ func (f *fakeServices) server() *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		// All users deliberately share an event ID. 2026-11-04 09:00 IST.
-		fmt.Fprintf(w, `[{"id":"e1","type":"PushEvent","created_at":"2026-11-04T03:30:00Z","payload":{}},
-			{"id":"%s-2","type":"PushEvent","created_at":"2026-11-04T04:00:00Z","payload":{}}]`, login)
+		if req.Variables["login"] == "" {
+			fmt.Fprint(w, `{"data":{"user":null}}`)
+			return
+		}
+		// Every account made 2 contributions on 2026-11-04.
+		fmt.Fprint(w, `{"data":{"user":{"contributionsCollection":{"contributionCalendar":{"weeks":[{"contributionDays":[
+			{"date":"2026-11-03","contributionCount":0},{"date":"2026-11-04","contributionCount":2}]}]}}}}}`)
 	})
 	return httptest.NewServer(mux)
 }
@@ -535,7 +540,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 		t.Errorf("manual check-in on a GitHub habit: %d", code)
 	}
 
-	// Bob linking the same event IDs must not collide, or see Alice's counts.
+	// Bob must not see Alice's counts, and his own don't collide with hers.
 	b.call(http.MethodPost, "/auth/switch", map[string]any{"user_id": bobID}, nil)
 	if s := b.summary(); s.GitHub.Linked || s.GitHub.Contributions != 0 {
 		t.Errorf("bob sees alice's GitHub: %+v", s.GitHub)
@@ -661,7 +666,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	}
 	var bobRows int
 	if err := conn.QueryRow(ctx, `SELECT (SELECT count(*) FROM tasks WHERE user_id = $1)
-		+ (SELECT count(*) FROM github_events WHERE user_id = $1)
+		+ (SELECT count(*) FROM github_contributions WHERE user_id = $1)
 		+ (SELECT count(*) FROM users WHERE id = $1)`, bobID).Scan(&bobRows); err != nil {
 		t.Fatal(err)
 	}
@@ -761,7 +766,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if got := carol.me().githubLogins(); got != "carolhub,carol2" {
 		t.Errorf("accounts after adding one = %q", got)
 	}
-	if got := carol.summary().GitHub.Contributions; got != 3 { // e1 is shared, plus one event each.
+	if got := carol.summary().GitHub.Contributions; got != 4 { // 2 from each account.
 		t.Errorf("pooled contributions = %d", got)
 	}
 	fake.mu.Lock()
@@ -799,7 +804,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 			t.Errorf("%s last error = %v", a.Login, a.LastError)
 		}
 	}
-	if got := carol.summary().GitHub.Contributions; got != 3 {
+	if got := carol.summary().GitHub.Contributions; got != 4 {
 		t.Errorf("contributions after a partial failure = %d", got)
 	}
 	fake.mu.Lock()

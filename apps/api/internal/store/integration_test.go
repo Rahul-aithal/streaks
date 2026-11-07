@@ -42,22 +42,21 @@ func TestSyncRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 18:30Z on the 3rd is 00:00 IST on the 4th.
-	at, _ := time.Parse(time.RFC3339, "2026-11-03T18:30:00Z")
-	events := []GitHubEvent{
-		{ID: "1", Type: "PushEvent", OccurredAt: at},
-		{ID: "2", Type: "PushEvent", OccurredAt: at.Add(-time.Second)},
-	}
+	days := []GitHubDay{{Day: today - 1, Count: 3}, {Day: today, Count: 1}}
 	for range 2 { // Re-running must not double-count.
-		if err := s.SaveGitHubEvents(ctx, user, events); err != nil {
+		if err := s.SaveGitHubContributions(ctx, user, "me", today-30, today, days); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A second GitHub account's contributions are added to the same days.
+	if err := s.SaveGitHubContributions(ctx, user, "work", today-30, today, []GitHubDay{{Day: today, Count: 5}}); err != nil {
+		t.Fatal(err)
 	}
 	counts, err := s.ContributionCounts(ctx, user, today-1, today)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts[today] != 1 || counts[today-1] != 1 {
+	if counts[today] != 6 || counts[today-1] != 3 {
 		t.Errorf("counts = %v", counts)
 	}
 	h, err := s.GetHabit(ctx, user, id)
@@ -99,12 +98,19 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Errorf("unarchiving a second GitHub habit: %v", err)
 	}
 
-	if err := s.SaveGitHubEvents(ctx, user, nil); err != nil {
+	// A later read without a day replaces its count, but the check-in stays.
+	if err := s.SaveGitHubContributions(ctx, user, "me", today-30, today, nil); err != nil {
 		t.Errorf("empty sync: %v", err)
+	}
+	if counts, _ := s.ContributionCounts(ctx, user, today-1, today); counts[today-1] != 0 || counts[today] != 5 {
+		t.Errorf("counts after an empty read = %v", counts)
+	}
+	if h, _ := s.GetHabit(ctx, user, later); len(h.CheckIns) != 2 {
+		t.Errorf("check-ins after an empty read = %v", h.CheckIns)
 	}
 
 	due := today
-	done := at
+	done, _ := time.Parse(time.RFC3339, "2026-11-03T18:30:00Z") // 00:00 IST on the 4th.
 	tasks := []Task{
 		{GoogleID: "a", ListID: "L", Title: "dated", Status: "needsAction", Due: &due},
 		{GoogleID: "b", ListID: "L", Title: "undated", Status: "needsAction"},

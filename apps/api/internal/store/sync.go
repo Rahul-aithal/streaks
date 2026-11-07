@@ -10,28 +10,31 @@ import (
 	"streaks/internal/streak"
 )
 
-// GitHubEvent is one counted activity event.
-type GitHubEvent struct {
-	ID         string
-	Type       string
-	OccurredAt time.Time
+// GitHubDay is one day's contribution count for one GitHub account.
+type GitHubDay struct {
+	Day   streak.Day
+	Count int
 }
 
-// SaveGitHubEvents stores a user's events and checks in their active GitHub habits
-// on each day with activity. It is safe to re-run: events are keyed by GitHub's ID.
-func (s *Store) SaveGitHubEvents(ctx context.Context, userID int64, events []GitHubEvent) error {
+// SaveGitHubContributions replaces one account's counts for the range read, then
+// checks in the user's active GitHub habit on each day with contributions.
+// Check-ins already made are never removed.
+func (s *Store) SaveGitHubContributions(ctx context.Context, userID int64, login string, from, to streak.Day, days []GitHubDay) error {
 	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		ids, types, times, days := make([]string, len(events)), make([]string, len(events)),
-			make([]string, len(events)), make([]string, len(events))
-		for i, e := range events {
-			ids[i], types[i] = e.ID, e.Type
-			times[i] = e.OccurredAt.UTC().Format(time.RFC3339)
-			days[i] = streak.DayOf(e.OccurredAt).String()
+		if _, err := tx.Exec(ctx, `DELETE FROM github_contributions
+			WHERE user_id = $1 AND login = $2 AND day BETWEEN $3::date AND $4::date`, userID, login, from, to); err != nil {
+			return err
+		}
+		dates, counts := make([]string, len(days)), make([]int32, len(days))
+		for i, d := range days {
+			dates[i], counts[i] = d.Day.String(), int32(d.Count)
 		}
 		// One statement rather than one round trip per row: Neon may be far away.
-		if _, err := tx.Exec(ctx, `INSERT INTO github_events (user_id, id, type, occurred_at, day)
-			SELECT $1::bigint, * FROM unnest($2::text[], $3::text[], $4::text[]::timestamptz[], $5::text[]::date[])
-			ON CONFLICT (user_id, id) DO NOTHING`, userID, ids, types, times, days); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO github_contributions (user_id, login, day, count)
+			SELECT $1::bigint, $2::text, d, c FROM unnest($3::text[]::date[], $4::int[]) AS t (d, c)
+			WHERE c > 0
+			ON CONFLICT (user_id, login, day) DO UPDATE SET count = EXCLUDED.count`,
+			userID, login, dates, counts); err != nil {
 			return err
 		}
 		return applyGitHubCheckIns(ctx, tx, userID)
@@ -40,20 +43,21 @@ func (s *Store) SaveGitHubEvents(ctx context.Context, userID int64, events []Git
 
 func applyGitHubCheckIns(ctx context.Context, tx pgx.Tx, userID int64) error {
 	_, err := tx.Exec(ctx, `INSERT INTO check_ins (habit_id, day)
-		SELECT h.id, e.day
+		SELECT h.id, c.day
 		FROM habits h
-		CROSS JOIN (SELECT DISTINCT day FROM github_events WHERE user_id = $1) e
+		CROSS JOIN (SELECT DISTINCT day FROM github_contributions WHERE user_id = $1) c
 		WHERE h.user_id = $1 AND h.source = 'github' AND h.archived_at IS NULL
 		ON CONFLICT (habit_id, day) DO NOTHING`, userID)
 	return err
 }
 
-// ContributionCounts returns a user's per-day activity counts in an inclusive range.
+// ContributionCounts returns a user's per-day contributions, summed across their
+// GitHub accounts, in an inclusive range.
 func (s *Store) ContributionCounts(ctx context.Context, userID int64, from, to streak.Day) (map[streak.Day]int, error) {
 	counts := map[streak.Day]int{}
 	err := s.run(ctx, func(ctx context.Context) error {
 		clear(counts)
-		rows, err := s.pool.Query(ctx, `SELECT day, count(*) FROM github_events
+		rows, err := s.pool.Query(ctx, `SELECT day, sum(count)::int FROM github_contributions
 			WHERE user_id = $1 AND day BETWEEN $2::date AND $3::date GROUP BY day`, userID, from, to)
 		if err != nil {
 			return err
