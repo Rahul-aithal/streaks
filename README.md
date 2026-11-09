@@ -68,15 +68,13 @@ Without an OAuth app, you can paste a [fine-grained token](https://github.com/se
 
 Streaks can email each account a summary of today's habits and streaks at **11 AM, 5 PM and 10 PM IST**. The 10 PM email warns about streaks that end at midnight.
 
-To send through [Resend](https://resend.com):
+To send through [Resend](https://resend.com) (recommended, and the only option on Render's free plan, which blocks SMTP ports):
 
 1. Create an API key with **Sending access**.
 2. In `.env`, set:
 
    ```
-   SMTP_HOST=smtp.resend.com
-   SMTP_USERNAME=resend
-   SMTP_PASSWORD=re_your_api_key
+   RESEND_API_KEY=re_your_api_key
    EMAIL_FROM=onboarding@resend.dev
    ```
 
@@ -98,7 +96,7 @@ Or, to send through Gmail:
 
 4. Restart, then use **Settings → Email reminders → Send a test email**.
 
-Any SMTP server works. Port 465 uses TLS from the start, and other ports must offer STARTTLS. Each account can turn its emails off in Settings.
+Any SMTP server works. Port 465 uses TLS from the start, and other ports must offer STARTTLS. If both `RESEND_API_KEY` and `SMTP_HOST` are set, Resend is used. Each account can turn its emails off in Settings.
 
 ## Running
 
@@ -107,6 +105,42 @@ make dev
 ```
 
 This starts the API on `127.0.0.1:8080` and the web app on <http://localhost:5173>. Stop both with Ctrl-C.
+
+`make lint` runs `go vet`, `gofmt`, the TypeScript checks and [oxlint](https://oxc.rs/docs/guide/usage/linter).
+
+## Deploying for free
+
+Everything runs on free plans, with no card needed:
+
+| Part | Where | Free allowance |
+|---|---|---|
+| Web app, `/api` proxy, cron | Cloudflare Worker (`apps/worker`) | 100,000 Worker requests a day; static files don't count |
+| Go API | Render free web service (`render.yaml`) | 750 hours a month; sleeps after 15 minutes idle |
+| Database | Neon free | Scales to zero when idle |
+| Email | Resend free | 100 emails a day |
+
+The browser only talks to the Worker. It serves the built app and forwards `/api/*` to Render, so cookies stay on one site. Because the API sleeps, its built-in timers are off in production (`JOBS_SECRET` is set). The Worker's cron calls `/jobs/reminders` at 11:00, 17:00 and 22:00 IST (plus a retry 15 minutes later) and `/jobs/sync` every 6 hours. A third cron pings `/healthz` from 07:00 to midnight IST so the app opens quickly. It uses about 560 of Render's 750 hours. Remove it from `apps/worker/wrangler.jsonc` to let the API sleep; the first visit after a sleep then takes up to a minute.
+
+1. **Migrate the database** from your machine: `make migrate`. Production can share the database you develop against. If it does, use the same `GOOGLE_TOKEN_KEY`, or stored tokens can't be decrypted.
+2. **Find your Worker URL.** Run `pnpm --filter worker exec wrangler login`. Your URL will be `https://streaks.<your-subdomain>.workers.dev`; the subdomain is under **Workers & Pages** in the Cloudflare dashboard. It's `<site>` below.
+3. **Google:** in the OAuth client, add the redirect URI `<site>/api/oauth/google/callback`.
+4. **GitHub (optional):** create a second OAuth app, since each one allows a single callback. Use homepage `<site>` and callback `<site>/api/oauth/github/callback`.
+5. **Render:** **New → Blueprint**, pick this repo, and fill in the values it asks for:
+   - The database, Google, GitHub and Resend values from your `.env`. Use the production GitHub app.
+   - `GOOGLE_REDIRECT_URI=<site>/api/oauth/google/callback` and `GITHUB_REDIRECT_URI=<site>/api/oauth/github/callback`. Cookies become `Secure` because these use HTTPS.
+   - `JOBS_SECRET` from `openssl rand -hex 32`.
+
+   Then copy the service URL, for example `https://streaks-api.onrender.com`.
+6. **Worker:**
+   - Set `API_ORIGIN` in `apps/worker/wrangler.jsonc` to that URL.
+   - Run `pnpm --filter worker exec wrangler secret put JOBS_SECRET` and paste the same secret.
+   - Run `make deploy-worker`.
+7. **Check it:**
+   - Open `<site>` and sign in.
+   - Use **Settings → Send a test email**.
+   - In the Cloudflare dashboard, the Worker's **Settings → Trigger events** lists the crons, and **Logs** shows each run.
+
+Render redeploys the API on every push to `main`. Run `make deploy-worker` again after web or Worker changes.
 
 ## Accounts
 
@@ -187,7 +221,9 @@ To backdate a check-in, open the habit and use **Recent days**. Today and the 2 
 - **Tokens:** Google and GitHub tokens are encrypted with AES-256-GCM using `GOOGLE_TOKEN_KEY`, and the API never returns them. Disconnecting a GitHub account or deleting a Streaks account revokes the connected tokens. Connect requests no GitHub scopes.
 - **Requests:** state-changing requests from another origin are refused. The Google callback needs a one-time `state` value that matches a cookie in the same browser.
 
-The API only listens on loopback. To host it, serve it over HTTPS and update `GOOGLE_REDIRECT_URI` and the OAuth client; cookies then become `Secure` automatically.
+- **Jobs:** `/jobs/*` exist only when `JOBS_SECRET` is set and need it as a bearer token. The Worker doesn't forward `/api/jobs/*` from browsers.
+
+Locally the API only listens on loopback. On Render it listens on `PORT`, or set `LISTEN_ADDR`.
 
 ## Layout
 
@@ -200,8 +236,11 @@ apps/api/internal/github   GitHub contribution calendar and OAuth
 apps/api/internal/gtasks   Google sign-in, Tasks client and daily counts
 apps/api/internal/secretbox  Encryption for stored tokens
 apps/api/internal/reminder   Reminder email schedule and content
-apps/api/internal/mailer     SMTP sending
-apps/api/internal/syncer   In-process sync loop
+apps/api/internal/mailer     Resend HTTPS API and SMTP sending
+apps/api/internal/syncer   Sync loop, and the sync-everyone job
 apps/api/migrations        Goose SQL, embedded in the binary
 apps/web/src/routes        Login, Today, habits list, habit detail, settings
+apps/web/public            Favicons and web manifest
+apps/worker                Cloudflare Worker: static app, /api proxy, cron
+render.yaml                Render Blueprint for the API
 ```

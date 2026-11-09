@@ -1,0 +1,38 @@
+// The site's front door, on Cloudflare's free Workers plan:
+// - serves the built web app (apps/web/dist/client) as static assets,
+// - forwards /api/* to the Go API on Render,
+// - runs the cron jobs that send reminders and sync, since the API sleeps.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "streaks",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "../web/dist/client",
+    "binding": "ASSETS",
+    // Every route that isn't a file gets index.html; the app routes in the browser.
+    "not_found_handling": "single-page-application",
+    // Only these reach the Worker; everything else is served straight from assets.
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    // The Render service's URL, e.g. https://streaks-api.onrender.com
+    "API_ORIGIN": "https://streaks-api.onrender.com"
+  },
+  // JOBS_SECRET is a secret: pnpm --filter worker exec wrangler secret put JOBS_SECRET
+  "triggers": {
+    // Times are UTC. IST is UTC+5:30.
+    "crons": [
+      // Reminders at 11:00, 17:00 and 22:00 IST, and again 15 minutes later to
+      // retry any that failed (sends are claimed, so nobody gets two).
+      "30,45 5,11,16 * * *",
+      // GitHub and Google Tasks sync every 6 hours.
+      "0 */6 * * *",
+      // Keeps the API awake from 07:00 to 00:00 IST so the app opens quickly.
+      // Render's free plan gives 750 hours a month; this uses about 560.
+      // Delete it to let the API sleep (first load then takes up to a minute).
+      "*/14 1-18 * * *"
+    ]
+  },
+  "observability": { "enabled": true }
+}

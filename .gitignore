@@ -8,3 +8,5 @@ dist/
 .nitro/
 *.log
 .DS_Store
+.wrangler/
+.dev.vars*

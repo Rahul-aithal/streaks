@@ -25,6 +25,13 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    plugins: [tailwindcss(), tanstackStart({ spa: { enabled: true } }), react()],
+    plugins: [
+      tailwindcss(),
+      tanstackStart({
+        // index.html, so static hosts (the Cloudflare Worker) serve it for every route.
+        spa: { enabled: true, prerender: { outputPath: "/index", autoSubfolderIndex: false } },
+      }),
+      react(),
+    ],
   }
 })

@@ -1,0 +1,42 @@
+# Render Blueprint for the Go API on the free plan (no card needed).
+# Render: New > Blueprint > pick this repo. It asks for each "sync: false" value.
+# The free plan sleeps after 15 minutes without requests; the Cloudflare
+# Worker's cron wakes it for reminders and syncs.
+services:
+  - type: web
+    name: streaks-api
+    runtime: go
+    plan: free
+    region: virginia # Next to the Neon database (us-east-1); each request makes several queries.
+    rootDir: apps/api
+    buildCommand: go build -trimpath -ldflags="-s -w" -o streaks ./cmd/streaks
+    startCommand: ./streaks serve
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # Render sets PORT; the API listens on it on every interface.
+      - key: DATABASE_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_TOKEN_KEY
+        sync: false
+      # https://streaks.<your-subdomain>.workers.dev/api/oauth/google/callback
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      # https://streaks.<your-subdomain>.workers.dev/api/oauth/github/callback
+      - key: GITHUB_REDIRECT_URI
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      # The same value as the Worker's JOBS_SECRET. Generate: openssl rand -hex 32
+      - key: JOBS_SECRET
+        sync: false
