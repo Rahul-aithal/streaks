@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "react",
+    "react-hooks",
+    "unicorn",
+    "oxc"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "ignorePatterns": [
+    "**/routeTree.gen.ts",
+    "**/worker-configuration.d.ts",
+    "**/dist/**"
+  ],
+  "rules": {
+    "react/react-in-jsx-scope": "off"
+  }
+}

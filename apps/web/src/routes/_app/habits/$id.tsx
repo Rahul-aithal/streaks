@@ -49,7 +49,7 @@ function HabitPage() {
           <ul className="flex flex-col divide-y">
             {days
               .slice(-RECENT_DAYS)
-              .reverse()
+              .toReversed()
               .map((day, index) => (
                 <RecentDay
                   key={day.day}
