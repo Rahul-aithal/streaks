@@ -33,6 +33,9 @@ type Server struct {
 
 	WebOrigin     string // Browser origin allowed to make state-changing requests.
 	SecureCookies bool
+	// Bearer token for /jobs/*, called by an outside scheduler. Empty turns
+	// those routes off.
+	JobsSecret string
 
 	oauthStates *stateStore
 }
@@ -77,6 +80,10 @@ func (s *Server) Handler() http.Handler {
 	// Public so an expired session lands on the login page rather than a JSON 401.
 	// It checks the session itself, and the state must be for the signed-in user.
 	root.HandleFunc("GET /oauth/github/callback", s.githubCallback)
+	if s.JobsSecret != "" {
+		root.Handle("POST /jobs/reminders", s.requireJobsSecret(http.HandlerFunc(s.runReminders)))
+		root.Handle("POST /jobs/sync", s.requireJobsSecret(http.HandlerFunc(s.runSync)))
+	}
 	root.Handle("/", s.requireSession(api))
 	return s.checkOrigin(root)
 }

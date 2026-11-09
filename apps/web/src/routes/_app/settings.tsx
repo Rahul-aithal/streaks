@@ -252,7 +252,7 @@ function EmailCard() {
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            To send emails, add the SMTP settings to <code>.env</code> (see the README), then restart.
+            To send emails, set <code>RESEND_API_KEY</code> (or the SMTP settings) and <code>EMAIL_FROM</code> (see the README), then restart.
           </p>
         )}
       </CardContent>

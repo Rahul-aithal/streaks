@@ -73,6 +73,26 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
+// SyncAll syncs every user now, for a scheduler outside the process (a cron
+// calling the jobs route). Failures are logged per user.
+func (s *Syncer) SyncAll(ctx context.Context) error {
+	users, err := s.Store.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, kind := range []string{KindGitHub, KindGoogle} {
+		for _, u := range users {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := s.syncUser(ctx, u, kind); err != nil && !errors.Is(err, ErrNotConfigured) {
+				slog.Error("sync failed", "kind", kind, "user", u.ID, "err", err)
+			}
+		}
+	}
+	return nil
+}
+
 // runDue syncs all users for each stale kind. A failure waits for the next
 // interval rather than retrying every check.
 func (s *Syncer) runDue(ctx context.Context) {

@@ -94,20 +94,23 @@ func serve(cfg config.Config) error {
 	if cfg.GitHubClientID != "" {
 		sync.GitHubOAuth = github.NewOAuth(cfg.GitHubClientID, cfg.GitHubClientSecret, cfg.GitHubRedirectURI)
 	}
-	go sync.Run(ctx)
+	// With JOBS_SECRET set, a cron outside calls /jobs/* instead, so the
+	// process can sleep between requests (Render's free plan does).
+	timers := cfg.JobsSecret == ""
+	if timers {
+		go sync.Run(ctx)
+	} else {
+		slog.Info("built-in timers are off: syncs and reminders run when /jobs/* is called")
+	}
 
 	var reminders *reminder.Reminder
-	if cfg.SMTPHost != "" {
-		reminders = &reminder.Reminder{
-			Store: st, Sync: sync, Now: time.Now, AppURL: cfg.WebOrigin(),
-			Mail: &mailer.SMTP{
-				Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername,
-				Password: cfg.SMTPPassword, From: cfg.EmailFrom,
-			},
+	if mail := newMailer(cfg); mail != nil {
+		reminders = &reminder.Reminder{Store: st, Sync: sync, Now: time.Now, AppURL: cfg.WebOrigin(), Mail: mail}
+		if timers {
+			go reminders.Run(ctx)
 		}
-		go reminders.Run(ctx)
 	} else {
-		slog.Info("reminder emails are off: SMTP_HOST is not set")
+		slog.Info("reminder emails are off: neither RESEND_API_KEY nor SMTP_HOST is set")
 	}
 
 	api := &httpapi.Server{
@@ -117,10 +120,10 @@ func serve(cfg config.Config) error {
 		Now:           time.Now,
 		WebOrigin:     cfg.WebOrigin(),
 		SecureCookies: cfg.SecureCookies(),
+		JobsSecret:    cfg.JobsSecret,
 	}
 	srv := &http.Server{
-		// Loopback only: it's reached through the web dev server.
-		Addr:              "127.0.0.1:" + cfg.APIPort,
+		Addr:              cfg.ListenAddr,
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -140,6 +143,20 @@ func serve(cfg config.Config) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// newMailer picks Resend's HTTPS API over SMTP when both are set.
+func newMailer(cfg config.Config) reminder.Sender {
+	switch {
+	case cfg.ResendAPIKey != "":
+		return &mailer.Resend{APIKey: cfg.ResendAPIKey, From: cfg.EmailFrom}
+	case cfg.SMTPHost != "":
+		return &mailer.SMTP{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword, From: cfg.EmailFrom,
+		}
+	}
+	return nil
 }
 
 func migrate(cfg config.Config, args []string) error {

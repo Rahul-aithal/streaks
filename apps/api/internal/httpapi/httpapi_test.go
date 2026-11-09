@@ -122,3 +122,30 @@ func TestCallbackRejectsMissingState(t *testing.T) {
 		t.Errorf("code=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+func TestJobsNeedTheSecret(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	post := func(h http.Handler, auth string) int {
+		req := httptest.NewRequest(http.MethodPost, "/jobs/reminders", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	h := (&Server{Now: time.Now, WebOrigin: "http://web", JobsSecret: secret}).Handler()
+	for _, auth := range []string{"", "Bearer wrong", secret, "Bearer " + secret + "x"} {
+		if code := post(h, auth); code != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: %d", auth, code)
+		}
+	}
+	if code := post(h, "Bearer "+secret); code != http.StatusOK {
+		t.Errorf("right secret: %d", code) // Email is off here, so it's a no-op.
+	}
+	// Without a secret configured the routes don't exist, so they need a session.
+	off := (&Server{Now: time.Now, WebOrigin: "http://web"}).Handler()
+	if code := post(off, "Bearer "); code != http.StatusUnauthorized {
+		t.Errorf("jobs off: %d", code)
+	}
+}

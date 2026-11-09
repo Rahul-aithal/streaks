@@ -1,4 +1,4 @@
-// Package mailer sends email over SMTP, using only the standard library.
+// Package mailer sends email over SMTP or Resend's HTTPS API, using only the standard library.
 package mailer
 
 import (

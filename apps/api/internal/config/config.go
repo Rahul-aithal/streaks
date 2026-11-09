@@ -16,7 +16,13 @@ type Config struct {
 	DatabaseURL       string
 	DatabaseURLDirect string
 	APIPort           string
-	SyncInterval      time.Duration
+	// Where the API listens. Locally it's loopback only, behind the web dev server.
+	ListenAddr   string
+	SyncInterval time.Duration
+	// Set when something outside calls the job routes on a schedule (the
+	// Cloudflare Worker's cron). The built-in timers are then off, and
+	// /jobs/* accepts this as a bearer token.
+	JobsSecret string
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -27,7 +33,9 @@ type Config struct {
 	GitHubClientSecret string
 	GitHubRedirectURI  string
 
-	// Optional. Without SMTPHost, no reminder emails are sent.
+	// Optional. Reminder emails go through Resend's HTTPS API if ResendAPIKey is
+	// set, else SMTP if SMTPHost is set, else they're off.
+	ResendAPIKey      string
 	SMTPHost          string
 	SMTPPort          string
 	SMTPUsername      string
@@ -48,6 +56,9 @@ func (c Config) WebOrigin() string {
 	return u.Scheme + "://" + u.Host
 }
 
+// EmailEnabled reports whether reminder emails can be sent.
+func (c Config) EmailEnabled() bool { return c.ResendAPIKey != "" || c.SMTPHost != "" }
+
 // ValidateServe reports the first setting the API can't run without.
 func (c Config) ValidateServe() error {
 	switch {
@@ -59,10 +70,12 @@ func (c Config) ValidateServe() error {
 		return errors.New("GOOGLE_TOKEN_KEY is required: openssl rand -hex 32")
 	case (c.GitHubClientID == "") != (c.GitHubClientSecret == ""):
 		return errors.New("set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or neither")
-	case c.SMTPHost != "" && c.EmailFrom == "":
-		return errors.New("EMAIL_FROM is required when SMTP_HOST is set")
+	case c.EmailEnabled() && c.EmailFrom == "":
+		return errors.New("EMAIL_FROM is required to send reminder emails")
+	case c.JobsSecret != "" && len(c.JobsSecret) < 32:
+		return errors.New("JOBS_SECRET must be at least 32 characters: openssl rand -hex 32")
 	}
-	if c.SMTPHost != "" {
+	if c.EmailEnabled() {
 		if _, err := mail.ParseAddress(c.EmailFrom); err != nil {
 			return fmt.Errorf("EMAIL_FROM %q isn't an email address (it defaults to SMTP_USERNAME)", c.EmailFrom)
 		}
@@ -88,6 +101,8 @@ func Load() (Config, error) {
 		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
 		GitHubRedirectURI:  envOr("GITHUB_REDIRECT_URI", "http://localhost:5173/api/oauth/github/callback"),
+		JobsSecret:         os.Getenv("JOBS_SECRET"),
+		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
 		SMTPHost:           os.Getenv("SMTP_HOST"),
 		SMTPPort:           envOr("SMTP_PORT", "587"),
 		SMTPUsername:       os.Getenv("SMTP_USERNAME"),
@@ -99,6 +114,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid SYNC_INTERVAL %q", os.Getenv("SYNC_INTERVAL"))
 	}
 	c.SyncInterval = interval
+	// Hosts such as Render say which port to use in PORT, and need every interface.
+	c.ListenAddr = os.Getenv("LISTEN_ADDR")
+	if c.ListenAddr == "" {
+		if port := os.Getenv("PORT"); port != "" {
+			c.ListenAddr = ":" + port
+		} else {
+			c.ListenAddr = "127.0.0.1:" + c.APIPort
+		}
+	}
 	return c, nil
 }
 

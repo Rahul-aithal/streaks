@@ -86,6 +86,21 @@ func (r *Reminder) tick(ctx context.Context) {
 	}
 }
 
+// RunDue sends the reminder whose window is open now, for a scheduler outside
+// the process (a cron calling the jobs route). Calling it again in the same
+// window only retries users whose send failed. It reports the slot it handled,
+// or "" if none is open.
+func (r *Reminder) RunDue(ctx context.Context) (string, error) {
+	day, slot, ok := DueSlot(r.Now())
+	if !ok {
+		return "", nil
+	}
+	if !r.sendSlot(ctx, day, slot) {
+		return slot.Name, errors.New("some reminders failed; see the logs")
+	}
+	return slot.Name, nil
+}
+
 // sendSlot emails everyone who wants this reminder and hasn't had it. It
 // reports whether every send succeeded.
 func (r *Reminder) sendSlot(ctx context.Context, day streak.Day, slot Slot) bool {
