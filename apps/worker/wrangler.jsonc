@@ -15,9 +15,15 @@
     // Only these reach the Worker; everything else is served straight from assets.
     "run_worker_first": ["/api/*"]
   },
+  // Served on our own domain. Cloudflare creates the DNS record and certificate.
+  // The API only accepts this origin (from GOOGLE_REDIRECT_URI on Render).
+  "routes": [{ "pattern": "streaks.devaithal.tech", "custom_domain": true }],
+  // Keep the old workers.dev address while sign-in still redirects there.
+  // Set to false once Render and the OAuth apps use streaks.devaithal.tech.
+  "workers_dev": true,
   "vars": {
     // The Render service's URL, e.g. https://streaks-api.onrender.com
-    "API_ORIGIN": "https://streaks-api.onrender.com"
+    "API_ORIGIN": "https://streaks-api-6v7j.onrender.com"
   },
   // JOBS_SECRET is a secret: pnpm --filter worker exec wrangler secret put JOBS_SECRET
   "triggers": {
