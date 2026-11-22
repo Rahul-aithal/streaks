@@ -12,7 +12,9 @@ services:
     buildCommand: go build -trimpath -ldflags="-s -w" -o streaks ./cmd/streaks
     startCommand: ./streaks serve
     healthCheckPath: /healthz
-    autoDeploy: true
+    # Deploy each push to main only after GitHub Actions passes, which includes
+    # migrating the database first (.github/workflows/ci.yml).
+    autoDeployTrigger: checksPass
     envVars:
       # Render sets PORT; the API listens on it on every interface.
       - key: DATABASE_URL

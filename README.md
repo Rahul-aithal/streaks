@@ -140,7 +140,19 @@ The browser only talks to the Worker. It serves the built app and forwards `/api
    - Use **Settings → Send a test email**.
    - In the Cloudflare dashboard, the Worker's **Settings → Trigger events** lists the crons, and **Logs** shows each run.
 
-Render redeploys the API on every push to `main`. Run `make deploy-worker` again after web or Worker changes.
+The site is served at <https://streaks.devaithal.tech>, a Custom Domain set by `routes` in `apps/worker/wrangler.jsonc`.
+
+### Branches and CI/CD
+
+Work on `dev`, then open a pull request from `dev` into `main`.
+
+- **Every push and pull request** to `dev` or `main` runs `.github/workflows/ci.yml`: `go vet`, `gofmt`, the Go tests (including the database tests, against a throwaway Postgres), the TypeScript checks, oxlint and the web build.
+- **A push to `main`** (merging the pull request) then migrates the production database and deploys the Worker.
+- **Render** deploys the API only once all of those checks pass (`autoDeployTrigger: checksPass` in `render.yaml`).
+
+The deploy jobs need these repository secrets: `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" template), `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_URL_DIRECT`. `make deploy-worker` still works for a manual deploy.
+
+Don't run `make migrate` against the production database from `dev`: point your local `.env` at a separate Neon branch, and let the merge to `main` migrate production.
 
 ## Accounts
 
