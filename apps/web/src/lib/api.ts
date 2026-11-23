@@ -132,7 +132,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const GOOGLE_SIGN_IN_URL = "/api/auth/google/start"
 export const GOOGLE_RECONNECT_URL = "/api/auth/google/start?consent=1"
 export const GITHUB_CONNECT_URL = "/api/auth/github/start"
-export const GITHUB_TOKEN_URL = "https://github.com/settings/personal-access-tokens/new"
+// A classic token with only read:user, the one scope that lets the contribution
+// calendar include private work.
+export const GITHUB_TOKEN_URL = "https://github.com/settings/tokens/new?scopes=read:user&description=Streaks"
 
 export const api = {
   me: () => request<Me>("GET", "/auth/me"),
