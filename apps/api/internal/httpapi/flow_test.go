@@ -726,8 +726,8 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	if !strings.HasPrefix(loc, services.URL+"/login/oauth/authorize?") || !strings.Contains(loc, "client_id=gh-client") || state == "" {
 		t.Errorf("authorize redirect: %q", loc)
 	}
-	if strings.Contains(loc, "scope=") {
-		t.Errorf("should ask for no scopes: %q", loc)
+	if !strings.Contains(loc, "scope=read%3Auser") || strings.Count(loc, "scope=") != 1 {
+		t.Errorf("should ask for read:user only: %q", loc)
 	}
 	if loc := carol.githubCallback("state=" + state + "&error=access_denied"); !strings.Contains(loc, "github=denied") {
 		t.Errorf("declined: %q", loc)

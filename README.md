@@ -60,9 +60,11 @@ Do this once for the Connect GitHub button:
 
 Each Streaks account then connects its own GitHub accounts under **Settings**, as many as you like. Their contributions are added together, so the GitHub activity habit counts a contribution from any of them. To add another, use **Connect another account**: GitHub shows an account picker if you're signed in to several accounts on github.com; otherwise, sign in there to the other account first. Connecting an account that's already linked just refreshes its token.
 
-Connect asks for no permissions. Streaks reads each account's **contribution calendar**, the green graph on its profile. Work in private repositories counts only if that profile has **Private contributions** turned on: on GitHub, open your profile, then **Contribution settings → Private contributions**. Streaks only sees a count per day, never the private repositories themselves.
+Connect asks for one permission, `read:user`: read-only profile data, with no access to repositories. Streaks reads each account's **contribution calendar**, the green graph on its profile. Work in private repositories counts only if that profile has **Private contributions** turned on (on GitHub, open your profile, then **Contribution settings → Private contributions**), and only with `read:user`: without it, GitHub leaves private work out of the calendar entirely. Streaks only sees a count per day, never the private repositories themselves.
 
-Without an OAuth app, you can paste a [fine-grained token](https://github.com/settings/personal-access-tokens/new) under **Settings → GitHub** instead; it needs no extra permissions.
+Accounts connected before Streaks asked for `read:user` have a token without it. Connect each of them again (connecting an account that's already linked just replaces its token) so their private work counts.
+
+Without an OAuth app, you can paste a [classic token](https://github.com/settings/tokens/new?scopes=read:user&description=Streaks) with only the `read:user` scope under **Settings → GitHub** instead.
 
 ### 4. Reminder emails (optional)
 

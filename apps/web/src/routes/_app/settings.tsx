@@ -195,10 +195,10 @@ function GitHubTokenForm({ defaultOpen }: { defaultOpen: boolean }) {
         </div>
         <p className="text-xs text-muted-foreground">
           <a href={GITHUB_TOKEN_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
-            Create a fine-grained token
+            Create a classic token
             <ExternalLink className="size-3" />
           </a>{" "}
-          with no extra permissions. It's stored encrypted.
+          with only the <code>read:user</code> scope, so private work counts too. It's stored encrypted.
         </p>
       </form>
     </details>

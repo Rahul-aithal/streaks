@@ -12,11 +12,16 @@ import (
 	"time"
 )
 
+// Scope lets the contribution calendar include private work as daily counts.
+const Scope = "read:user"
+
 // DefaultWebURL hosts GitHub's OAuth pages, which aren't on the API host.
 const DefaultWebURL = "https://github.com"
 
-// OAuth is the "Connect GitHub" flow for an OAuth app. It requests no scopes, so
-// the token can read public data only and can't change anything.
+// OAuth is the "Connect GitHub" flow for an OAuth app. It requests only
+// read:user: read-only profile data, with no access to repositories, and nothing
+// it can change. Without it GitHub leaves private work out of the account's own
+// contribution calendar, even when the profile shows private contributions.
 type OAuth struct {
 	ClientID     string
 	ClientSecret string
@@ -40,6 +45,7 @@ func (o *OAuth) AuthorizeURL(state string) string {
 		"client_id":    {o.ClientID},
 		"redirect_uri": {o.RedirectURI},
 		"state":        {state},
+		"scope":        {Scope},
 		// Lets someone signed in to several GitHub accounts choose which to connect.
 		"prompt": {"select_account"},
 	}.Encode()
