@@ -15,9 +15,11 @@
     // Only these reach the Worker; everything else is served straight from assets.
     "run_worker_first": ["/api/*"]
   },
-  // Served on our own domain. Cloudflare creates the DNS record and certificate.
-  // The API only accepts this origin (from GOOGLE_REDIRECT_URI on Render).
-  "routes": [{ "pattern": "streaks.devaithal.tech", "custom_domain": true }],
+  // Served on streaks.devaithal.tech, a Custom Domain attached in the dashboard
+  // (Workers > streaks > Settings > Domains & Routes), not here: deploying a
+  // domain from this file needs a token with DNS access to the whole zone, and
+  // CI's token can only deploy this Worker. The API only accepts that origin
+  // (from GOOGLE_REDIRECT_URI on Render).
   // Keep the old workers.dev address while sign-in still redirects there.
   // Set to false once Render and the OAuth apps use streaks.devaithal.tech.
   "workers_dev": true,
