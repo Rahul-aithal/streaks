@@ -71,6 +71,10 @@ jobs:
       - run: pnpm --filter worker typecheck
       - run: pnpm exec oxlint apps/web/src apps/worker/src
       - run: pnpm --filter web build
+      # Bundles the Worker and checks wrangler.jsonc exactly as a deploy would,
+      # without uploading, so a broken Worker fails the PR rather than main.
+      - name: Worker deploy dry run
+        run: pnpm --filter worker exec wrangler deploy --dry-run --outdir dist
 
   migrate:
     name: Migrate production database

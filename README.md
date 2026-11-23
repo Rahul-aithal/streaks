@@ -140,7 +140,7 @@ The browser only talks to the Worker. It serves the built app and forwards `/api
    - Use **Settings → Send a test email**.
    - In the Cloudflare dashboard, the Worker's **Settings → Trigger events** lists the crons, and **Logs** shows each run.
 
-The site is served at <https://streaks.devaithal.tech>, a Custom Domain set by `routes` in `apps/worker/wrangler.jsonc`.
+The site is served at <https://streaks.devaithal.tech>, a Custom Domain attached in the Cloudflare dashboard under **Workers → streaks → Settings → Domains & Routes**. It isn't in `apps/worker/wrangler.jsonc` on purpose: deploying it from there needs a token with DNS access to the zone, while CI's token can only deploy this Worker.
 
 ### Branches and CI/CD
 
@@ -150,7 +150,7 @@ Work on `dev`, then open a pull request from `dev` into `main`.
 - **A push to `main`** (merging the pull request) then migrates the production database and deploys the Worker.
 - **Render** deploys the API only once all of those checks pass (`autoDeployTrigger: checksPass` in `render.yaml`).
 
-The deploy jobs need these repository secrets: `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" template), `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_URL_DIRECT`. `make deploy-worker` still works for a manual deploy.
+The deploy jobs need these repository secrets: `CLOUDFLARE_API_TOKEN` (from **Workers → streaks → Settings → Builds → API token for external CI/CD**, which can deploy only this Worker), `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_URL_DIRECT`. `make deploy-worker` still works for a manual deploy.
 
 Don't run `make migrate` against the production database from `dev`: point your local `.env` at a separate Neon branch, and let the merge to `main` migrate production.
 
