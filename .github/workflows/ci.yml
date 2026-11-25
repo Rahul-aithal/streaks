@@ -57,7 +57,7 @@ jobs:
       - run: go build -trimpath -o /dev/null ./cmd/streaks
 
   web:
-    name: Web and Worker (typecheck, lint, build)
+    name: Web and Worker (typecheck, lint, test, build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -70,6 +70,9 @@ jobs:
       - run: pnpm --filter web typecheck
       - run: pnpm --filter worker typecheck
       - run: pnpm exec oxlint apps/web/src apps/worker/src
+      # Fails below 100% coverage of the files listed in each vitest.config.ts.
+      - run: pnpm --filter web test
+      - run: pnpm --filter worker test
       - run: pnpm --filter web build
       # Bundles the Worker and checks wrangler.jsonc exactly as a deploy would,
       # without uploading, so a broken Worker fails the PR rather than main.

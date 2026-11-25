@@ -20,11 +20,15 @@ build-web:
 test:
 	cd apps/api && go test ./...
 	pnpm --filter web typecheck
+	pnpm --filter web test
+	pnpm --filter worker test
 
 lint:
 	cd apps/api && go vet ./...
 	@out="$$(cd apps/api && gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	pnpm --filter web typecheck
+	pnpm --filter web test
+	pnpm --filter worker test
 	pnpm --filter worker typecheck
 	pnpm exec oxlint apps/web/src apps/worker/src
 

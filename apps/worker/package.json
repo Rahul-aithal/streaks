@@ -6,10 +6,13 @@
     "deploy": "pnpm --filter web build && wrangler deploy",
     "dev": "wrangler dev",
     "types": "wrangler types",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^5.1.1",
     "typescript": "^7.0.2",
+    "vitest": "^5.1.1",
     "wrangler": "^4.158.0"
   }
 }
