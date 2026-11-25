@@ -1,11 +1,12 @@
-# CI on every push and pull request to dev and main. A push to main also
+# CI on every pull request to dev and main, and on every push to main. (A push to
+# dev is covered by its pull request; running both doubled every check.) A push to main also
 # migrates the production database and deploys the Worker. Render deploys the
 # API itself once every check here passes (autoDeployTrigger: checksPass).
 name: CI/CD
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: [main, dev]
 
@@ -57,7 +58,9 @@ jobs:
       - run: go build -trimpath -o /dev/null ./cmd/streaks
 
   web:
-    name: Web and Worker (typecheck, lint, test, build)
+    # The name is a required status check in branch protection, so it stays as is even
+    # though this job also runs the tests.
+    name: Web and Worker (typecheck, lint, build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
