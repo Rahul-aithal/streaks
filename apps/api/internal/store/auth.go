@@ -17,17 +17,18 @@ type User struct {
 	AvatarURL       string
 	RefreshTokenEnc string
 	NeedsReconnect  bool
+	GoogleReadOnly  bool // The token can read tasks but not tick them off.
 	EmailReminders  bool
 	CreatedAt       time.Time
 }
 
 const userColumns = `u.id, u.google_sub, u.email, u.name, u.avatar_url, u.refresh_token_enc,
-	u.needs_reconnect, u.email_reminders, u.created_at`
+	u.needs_reconnect, u.google_read_only, u.email_reminders, u.created_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.GoogleSub, &u.Email, &u.Name, &u.AvatarURL, &u.RefreshTokenEnc,
-		&u.NeedsReconnect, &u.EmailReminders, &u.CreatedAt)
+		&u.NeedsReconnect, &u.GoogleReadOnly, &u.EmailReminders, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}
@@ -95,6 +96,15 @@ func (s *Store) SaveSignIn(ctx context.Context, sub, email, name, avatarURL, ref
 		return err
 	})
 	return id, err
+}
+
+// SetGoogleReadOnly flags whether the user's token can only read tasks.
+func (s *Store) SetGoogleReadOnly(ctx context.Context, userID int64, readOnly bool) error {
+	return s.run(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `UPDATE users SET google_read_only = $2, updated_at = now()
+			WHERE id = $1 AND google_read_only <> $2`, userID, readOnly)
+		return err
+	})
 }
 
 // SetNeedsReconnect flags whether Google still accepts the user's token.

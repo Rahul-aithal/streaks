@@ -199,12 +199,60 @@ func (s *Syncer) syncGoogle(ctx context.Context, u store.User) error {
 		return ErrUnreadableToken
 	}
 	today := streak.DayOf(s.Now())
-	tasks, err := s.Google.FetchTasks(ctx, token, today)
+	tasks, writable, err := s.Google.FetchTasks(ctx, token, today)
 	if err != nil {
 		return err
 	}
+	if err := s.Store.SetGoogleReadOnly(ctx, u.ID, !writable); err != nil {
+		slog.Warn("record Google access", "user", u.ID, "err", err)
+	}
 	_, snap := gtasks.ForToday(tasks, today)
 	return s.Store.SaveTasks(ctx, u.ID, tasks, today, snap)
+}
+
+// SetTaskDone marks one of a user's tasks done, or open again, in Google and
+// then in the cache. It waits for any running sync, so a sync can't write back
+// a state read before the change.
+func (s *Syncer) SetTaskDone(ctx context.Context, userID int64, taskID string, done bool) (store.Task, error) {
+	u, err := s.Store.GetUser(ctx, userID)
+	if err != nil {
+		return store.Task{}, err
+	}
+	task, err := s.Store.GetTask(ctx, userID, taskID)
+	if err != nil {
+		return store.Task{}, err
+	}
+	token, err := s.Box.Open(u.RefreshTokenEnc)
+	if err != nil {
+		return store.Task{}, ErrUnreadableToken
+	}
+	ctx, cancel := context.WithTimeout(ctx, syncLimit)
+	defer cancel()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated, err := s.Google.SetTaskStatus(ctx, token, task.ListID, task.GoogleID, done)
+	switch {
+	case errors.Is(err, gtasks.ErrTaskGone):
+		if delErr := s.Store.DeleteTask(ctx, userID, taskID); delErr != nil {
+			slog.Warn("drop deleted task", "user", userID, "err", delErr)
+		}
+		return store.Task{}, err
+	case errors.Is(err, gtasks.ErrNeedsWriteAccess):
+		if flagErr := s.Store.SetGoogleReadOnly(ctx, userID, true); flagErr != nil {
+			slog.Warn("record Google access", "user", userID, "err", flagErr)
+		}
+		return store.Task{}, err
+	case errors.Is(err, gtasks.ErrReconnect):
+		if flagErr := s.Store.SetNeedsReconnect(ctx, userID, true); flagErr != nil {
+			slog.Warn("record reconnect state", "user", userID, "err", flagErr)
+		}
+		return store.Task{}, err
+	case err != nil:
+		return store.Task{}, err
+	}
+	return updated, s.Store.UpdateTask(ctx, userID, updated)
 }
 
 // LinkGitHub verifies a token, stores it encrypted, and runs a first sync. A

@@ -320,7 +320,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts": list,
-		"google":   map[string]any{"needs_reconnect": sess.user.NeedsReconnect, "sync": googleRun},
+		"google": map[string]any{
+			"needs_reconnect": sess.user.NeedsReconnect, "read_only": sess.user.GoogleReadOnly, "sync": googleRun,
+		},
 		"github": map[string]any{
 			"accounts": github, "sync": githubRun, "connect_enabled": s.Sync.GitHubOAuth != nil,
 		},

@@ -45,6 +45,7 @@ type Digest struct {
 	Daily   streak.Result
 	AppURL  string
 	Subject string
+	Lead    string // The one-line message under the greeting.
 }
 
 // Build summarizes today's habits. ok is false when there are no active habits,
@@ -56,7 +57,7 @@ func Build(habits []store.Habit, today streak.Day, slot Slot, appURL string) (d 
 		if h.ArchivedAt != nil {
 			continue
 		}
-		input := streak.Habit{Schedules: h.Schedules, CheckIns: h.CheckIns}
+		input := h.StreakInput()
 		inputs = append(inputs, input)
 		t := streak.NewTracker(input, today)
 		line := Line{Name: h.Name, Streak: streak.Compute(input, today).Current}
@@ -64,7 +65,7 @@ func Build(habits []store.Habit, today streak.Day, slot Slot, appURL string) (d 
 		case t.Done(today):
 			line.Status = "done"
 			d.Done = append(d.Done, line)
-		case t.Scheduled(today):
+		case t.Scheduled(today) && !t.CoolOff(today):
 			line.Status = "todo"
 			line.AtRisk = line.Streak > 0
 			d.Todo = append(d.Todo, line)
@@ -77,7 +78,8 @@ func Build(habits []store.Habit, today streak.Day, slot Slot, appURL string) (d 
 		return d, false
 	}
 	d.Daily = streak.ComputeDaily(inputs, today)
-	d.Subject = "Streaks: " + d.headline()
+	d.Subject = d.headline()
+	d.Lead = d.lead()
 	return d, true
 }
 
@@ -91,21 +93,86 @@ func (d Digest) atRisk() int {
 	return n
 }
 
+// riskStreak is the longest streak that ends tonight unless it's checked in.
+func (d Digest) riskStreak() int {
+	n := 0
+	for _, l := range d.Todo {
+		if l.AtRisk && l.Streak > n {
+			n = l.Streak
+		}
+	}
+	return n
+}
+
+// headline is the subject line.
 func (d Digest) headline() string {
 	todo, done := len(d.Todo), len(d.Done)
 	switch {
 	case todo == 0 && done == 0:
-		return "rest day, your streaks are safe"
+		return "😌 Rest day. Your streaks are safe"
 	case todo == 0:
-		return fmt.Sprintf("all %s done today", plural(done, "habit"))
-	case d.Slot.Name == "night" && d.atRisk() > 0:
-		return fmt.Sprintf("%s ending at midnight", plural(d.atRisk(), "streak"))
+		return "🎉 All done for today. Streak safe!"
+	case d.Slot.Name == "night" && d.atRisk() == 1:
+		return fmt.Sprintf("🔥 Your %s ends at midnight", dayStreak(d.riskStreak()))
+	case d.Slot.Name == "night" && d.atRisk() > 1:
+		return fmt.Sprintf("🔥 %d streaks end at midnight, up to %s", d.atRisk(), days(d.riskStreak()))
 	case d.Slot.Name == "night":
-		return fmt.Sprintf("%s left today", plural(todo, "habit"))
+		return fmt.Sprintf("%s left. Finish strong", plural(todo, "habit"))
+	case d.Slot.Name == "afternoon" && done == 0:
+		return "Nothing checked in yet. Today still counts"
 	case d.Slot.Name == "afternoon":
-		return fmt.Sprintf("%d of %s done today", done, plural(todo+done, "habit"))
+		return fmt.Sprintf("%d of %d done. Keep going!", done, todo+done)
 	}
-	return fmt.Sprintf("%s to do today", plural(todo, "habit"))
+	return fmt.Sprintf("%s today. Start with the easy one", plural(todo, "habit"))
+}
+
+// lead is the sentence at the top of the email body.
+func (d Digest) lead() string {
+	todo, done := len(d.Todo), len(d.Done)
+	open := names(d.Todo)
+	switch {
+	case todo == 0 && done == 0:
+		return "Nothing is scheduled today, so your streaks are safe. Enjoy the break."
+	case todo == 0:
+		return "Every habit is checked off and your streak is safe. See you tomorrow."
+	case d.Slot.Name == "night" && d.atRisk() == 1:
+		return fmt.Sprintf("%s is still open, and your %s ends at midnight. A couple of minutes is enough.", open, dayStreak(d.riskStreak()))
+	case d.Slot.Name == "night" && d.atRisk() > 1:
+		return fmt.Sprintf("%s are still open, and those streaks end at midnight. Don't let them go now.", open)
+	case d.Slot.Name == "night":
+		return fmt.Sprintf("Still open: %s. Check in before midnight and close out the day.", open)
+	case d.Slot.Name == "afternoon" && done == 0:
+		return fmt.Sprintf("You haven't checked in anything yet. Still to do: %s.", open)
+	case d.Slot.Name == "afternoon":
+		return fmt.Sprintf("%d down, %d to go: %s.", done, todo, open)
+	}
+	return fmt.Sprintf("On today: %s. Get it done early and the day is yours.", open)
+}
+
+// names lists habit names for a sentence: "a", "a and b", "a, b and c",
+// "a, b and 2 more".
+func names(lines []Line) string {
+	q := func(l Line) string { return "\u201c" + l.Name + "\u201d" }
+	switch len(lines) {
+	case 0:
+		return ""
+	case 1:
+		return q(lines[0])
+	case 2:
+		return q(lines[0]) + " and " + q(lines[1])
+	case 3:
+		return q(lines[0]) + ", " + q(lines[1]) + " and " + q(lines[2])
+	}
+	return q(lines[0]) + ", " + q(lines[1]) + " and " + fmt.Sprintf("%d more", len(lines)-2)
+}
+
+func dayStreak(n int) string { return fmt.Sprintf("%d-day streak", n) }
+
+func (d Digest) Cta() string {
+	if len(d.Todo) == 0 {
+		return "Open Streaks"
+	}
+	return "Check in now"
 }
 
 func plural(n int, word string) string {
@@ -145,7 +212,7 @@ func (l Line) describe() string {
 
 func (d Digest) text() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s. Here's %s.\n", d.Slot.Greeting, d.Date)
+	fmt.Fprintf(&b, "%s. It's %s.\n\n%s\n", d.Slot.Greeting, d.Date, d.Lead)
 	section := func(title string, lines []Line) {
 		if len(lines) == 0 {
 			return
@@ -170,18 +237,20 @@ var htmlTemplate = template.Must(template.New("digest").Funcs(template.FuncMap{
 	"days":     days,
 	"list":     func(v ...any) []any { return v },
 }).Parse(`<!doctype html>
-<html><body style="margin:0;padding:24px;background:#f5f5f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1c1917">
-<div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e7e5e4;border-radius:12px;padding:24px">
-<p style="margin:0 0 4px;color:#059669;font-weight:600">Streaks</p>
-<h1 style="margin:0 0 4px;font-size:20px">{{.Slot.Greeting}}</h1>
-<p style="margin:0 0 20px;color:#78716c">{{.Date}}</p>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"></head>
+<body style="margin:0;padding:24px 16px;background:#ffffff;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1c1917;font-size:16px;line-height:24px">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0">{{.Lead}}</div>
+<div style="max-width:480px;margin:0 auto">
+<p style="margin:0 0 24px;font-size:14px;font-weight:600;color:#059669">Streaks</p>
+<h1 style="margin:0 0 8px;font-size:22px;line-height:28px">{{.Slot.Greeting}}</h1>
+<p style="margin:0 0 24px;color:#57534e">{{.Lead}}</p>
 {{template "section" (list "To do" .Todo)}}
 {{template "section" (list "Done" .Done)}}
-{{template "section" (list "Rest day, streak held" .Rest)}}
-<p style="margin:20px 0 0;padding-top:16px;border-top:1px solid #e7e5e4">Daily streak: <strong>{{days .Daily.Current}}</strong> <span style="color:#78716c">(longest {{days .Daily.Longest}})</span></p>
-{{if .AppURL}}<p style="margin:20px 0 0"><a href="{{.AppURL}}" style="display:inline-block;background:#059669;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:600">Open Streaks</a></p>{{end}}
+{{template "section" (list "Rest day" .Rest)}}
+{{if .AppURL}}<p style="margin:24px 0"><a href="{{.AppURL}}" style="display:inline-block;background:#059669;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:600">{{.Cta}}</a></p>{{end}}
+<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e7e5e4;font-size:13px;color:#78716c">{{.Date}}. Daily streak: {{days .Daily.Current}} (longest {{days .Daily.Longest}}). You can turn these emails off in Settings.</p>
 </div></body></html>
-{{define "section"}}{{$lines := index . 1}}{{if $lines}}<h2 style="margin:16px 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:#78716c">{{index . 0}}</h2>
-<ul style="margin:0;padding:0;list-style:none">{{range $lines}}
-<li style="padding:8px 0;border-bottom:1px solid #f5f5f4"><strong>{{.Name}}</strong><br><span style="color:{{if .AtRisk}}#dc2626{{else}}#78716c{{end}};font-size:14px">{{describe .}}</span></li>{{end}}
-</ul>{{end}}{{end}}`))
+{{define "section"}}{{$lines := index . 1}}{{if $lines}}<p style="margin:16px 0 4px;font-size:13px;font-weight:600;color:#78716c">{{index . 0}}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{{range $lines}}
+<tr><td style="padding:8px 0;border-bottom:1px solid #f5f5f4"><strong>{{.Name}}</strong><br><span style="font-size:14px;color:{{if .AtRisk}}#dc2626{{else}}#78716c{{end}}">{{describe .}}</span></td></tr>{{end}}
+</table>{{end}}{{end}}`))

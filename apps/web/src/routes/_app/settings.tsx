@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { ExternalLink } from "lucide-react"
+import { ChevronDown, ExternalLink } from "lucide-react"
 import { type FormEvent, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { AccountAvatar } from "@/components/account-menu"
@@ -8,6 +8,7 @@ import { GoogleSignInButton } from "@/components/google-button"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api, type GitHubAccount, GITHUB_CONNECT_URL, GITHUB_TOKEN_URL, GOOGLE_RECONNECT_URL, type SyncRun } from "@/lib/api"
@@ -33,13 +34,22 @@ function SyncStatus({ run }: { run: SyncRun }) {
 
 function SettingsPage() {
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-      <GoogleCard />
-      <GitHubCard />
-      <EmailCard />
-      <DangerCard />
-    </div>
+    <>
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="text-sm text-muted-foreground">Accounts, reminders and your data.</p>
+      </div>
+      <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="flex flex-col gap-5">
+          <GoogleCard />
+          <GitHubCard />
+        </div>
+        <div className="flex flex-col gap-5">
+          <EmailCard />
+          <DangerCard />
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -57,10 +67,11 @@ function GoogleCard() {
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate font-medium">{active.email}</p>
             {google.needs_reconnect && <Badge variant="destructive">Needs reconnecting</Badge>}
+            {google.read_only && !google.needs_reconnect && <Badge variant="secondary">Tasks: read-only</Badge>}
           </div>
           <SyncStatus run={google.sync} />
         </div>
-        {google.needs_reconnect && (
+        {(google.needs_reconnect || google.read_only) && (
           <GoogleSignInButton href={GOOGLE_RECONNECT_URL} size="sm">
             Reconnect
           </GoogleSignInButton>
@@ -102,7 +113,7 @@ function GitHubCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {connected && (
-          <ul className="flex flex-col divide-y rounded-lg border">
+          <ul className="flex flex-col divide-y rounded-lg border bg-muted/30">
             {github.accounts.map((account) => (
               <GitHubAccountRow key={account.id} account={account} />
             ))}
@@ -172,36 +183,42 @@ function GitHubTokenForm({ defaultOpen }: { defaultOpen: boolean }) {
     link.mutate(token)
   }
 
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <details open={defaultOpen} className="text-sm">
-      <summary className="cursor-pointer text-muted-foreground">
-        Connect with a token instead
-      </summary>
-      <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
-        <Label htmlFor="github-token">Personal access token</Label>
-        <div className="flex gap-2">
-          <Input
-            id="github-token"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="github_pat_…"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
-          <Button type="submit" disabled={link.isPending || token.trim() === ""}>
-            {link.isPending ? "Connecting…" : "Connect"}
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          <a href={GITHUB_TOKEN_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
-            Create a classic token
-            <ExternalLink className="size-3" />
-          </a>{" "}
-          with only the <code>read:user</code> scope, so private work counts too. It's stored encrypted.
-        </p>
-      </form>
-    </details>
+    <Collapsible open={open} onOpenChange={setOpen} className="text-sm">
+      <CollapsibleTrigger asChild>
+        <Button variant="ghost" size="sm" className="group/token -ml-2 text-muted-foreground">
+          Connect with a token instead
+          <ChevronDown className="transition-transform duration-200 group-data-[state=open]/token:rotate-180" />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+        <form onSubmit={submit} className="flex flex-col gap-2 pt-3">
+          <Label htmlFor="github-token">Personal access token</Label>
+          <div className="flex gap-2">
+            <Input
+              id="github-token"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="github_pat_…"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <Button type="submit" disabled={link.isPending || token.trim() === ""}>
+              {link.isPending ? "Connecting…" : "Connect"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            <a href={GITHUB_TOKEN_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">
+              Create a classic token
+              <ExternalLink className="size-3" />
+            </a>{" "}
+            with only the <code>read:user</code> scope, so private work counts too. It's stored encrypted.
+          </p>
+        </form>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -264,9 +281,9 @@ function DangerCard() {
   const { active } = useMe()
   const remove = useSessionChange(api.deleteAccount, ({ signed_in }) => (signed_in ? "/" : "/login"))
   return (
-    <Card>
+    <Card className="border-destructive/40">
       <CardHeader>
-        <CardTitle>Delete account</CardTitle>
+        <CardTitle className="text-destructive">Delete account</CardTitle>
         <CardDescription>
           Permanently deletes this account's habits, check-ins, streaks and tasks from Streaks, and revokes Google and GitHub access.
           Your data in Google and GitHub isn't touched.

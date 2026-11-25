@@ -20,6 +20,10 @@ export function useApiMutation<TVars, TResult>(
         return
       }
       toast.error(error.message)
+      // A failed write can still change what the server knows (Google turning
+      // out to be read-only, a task deleted there), and undoes any instant
+      // feedback the UI showed, so refetch.
+      void queryClient.invalidateQueries()
     },
   })
 }

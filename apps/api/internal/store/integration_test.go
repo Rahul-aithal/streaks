@@ -66,7 +66,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	if len(h.CheckIns) != 2 || h.CheckIns[0] != today-1 || h.CheckIns[1] != today {
 		t.Errorf("check-ins = %v", h.CheckIns)
 	}
-	if got := streak.Compute(streak.Habit{Schedules: h.Schedules, CheckIns: h.CheckIns}, today); got.Current != 2 {
+	if got := streak.Compute(h.StreakInput(), today); got.Current != 2 {
 		t.Errorf("streak = %+v", got)
 	}
 

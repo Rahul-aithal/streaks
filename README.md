@@ -6,8 +6,15 @@ streaks from check-in records, snapshots Google Tasks daily, and lets GitHub act
 complete a "coding" habit automatically.
 
 - **API:** one Go binary (`apps/api`), `net/http`, pgx, goose. No ORM.
-- **Web:** React, TanStack Start in SPA mode, TanStack Query, Tailwind, shadcn/ui (`apps/web`).
+- **Web:** React, TanStack Start in SPA mode, TanStack Query, Tailwind, shadcn/ui (`apps/web`). UI is shadcn first; see CLAUDE.md.
 - **Database:** Postgres on Neon. Day boundaries use Asia/Kolkata.
+
+### Rewards
+
+Finishing a Google Task earns 1 point (up to 5 a day, and each task only once). Spend them on the Today page:
+
+- **Cool-off day (3 pts):** nothing you skip that day breaks a streak. Book it up to 14 days ahead, or up to 7 days back to rescue a missed day. A day that hasn't started yet can be cancelled for a refund.
+- **Save a streak (2 pts):** count one habit as done on a day you missed, up to 7 days back. This works for GitHub habits too.
 
 ## Setup
 
@@ -28,7 +35,7 @@ make install
 ### 2. Google sign-in
 
 1. In the [Google Cloud console](https://console.cloud.google.com), create a project and enable the **Google Tasks API**.
-2. Under **Google Auth Platform**, set the audience to **External**, and add the `openid`, `email`, `profile` and `tasks.readonly` scopes.
+2. Under **Google Auth Platform**, set the audience to **External**, and add the `openid`, `email`, `profile` and `tasks` scopes. `tasks` lets Streaks mark a task done (or open again) from the Today page; it never creates or deletes tasks. An account that signed in while Streaks asked for `tasks.readonly` keeps syncing, but needs **Reconnect Google** once before it can tick tasks off.
 3. Choose who can get in. In **Testing**, list every account under **Test users**; tokens reportedly expire after 7 days, and Streaks then asks you to reconnect. **Publishing** the app removes both limits, but then anyone with a Google account can sign in, because Streaks has no list of its own. Google also shows an "unverified app" warning you can click through for your own app.
 4. Create an OAuth client of type **Web application**, with this **Authorized redirect URI**:
 

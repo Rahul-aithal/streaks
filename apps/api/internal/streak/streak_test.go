@@ -316,3 +316,48 @@ func TestMaskRoundTrip(t *testing.T) {
 		t.Errorf("round trip = %v", got)
 	}
 }
+
+func TestRewards(t *testing.T) {
+	daily := []Schedule{{From: day(t, "2026-11-01"), Mask: EveryDay}}
+
+	t.Run("cool-off day bridges a missed day without adding", func(t *testing.T) {
+		h := Habit{Schedules: daily, CheckIns: days(t, "2026-11-02", "2026-11-04"), CoolOffs: days(t, "2026-11-03")}
+		got := Compute(h, day(t, "2026-11-04"))
+		if got.Current != 2 || got.Longest != 2 {
+			t.Errorf("current=%d longest=%d, want 2 and 2", got.Current, got.Longest)
+		}
+	})
+	t.Run("a check-in on a cool-off day still counts", func(t *testing.T) {
+		h := Habit{Schedules: daily, CheckIns: days(t, "2026-11-02", "2026-11-03"), CoolOffs: days(t, "2026-11-03")}
+		if got := Compute(h, day(t, "2026-11-03")); got.Current != 2 {
+			t.Errorf("current=%d, want 2", got.Current)
+		}
+	})
+	t.Run("a future cool-off day changes nothing yet", func(t *testing.T) {
+		h := Habit{Schedules: daily, CheckIns: days(t, "2026-11-02"), CoolOffs: days(t, "2026-11-05")}
+		if got := Compute(h, day(t, "2026-11-04")); got.Current != 0 {
+			t.Errorf("current=%d, want 0", got.Current)
+		}
+	})
+	t.Run("a save counts as done", func(t *testing.T) {
+		h := Habit{Schedules: daily, CheckIns: days(t, "2026-11-02", "2026-11-04"), Saves: days(t, "2026-11-03")}
+		got := Compute(h, day(t, "2026-11-04"))
+		if got.Current != 3 {
+			t.Errorf("current=%d, want 3", got.Current)
+		}
+		tr := NewTracker(h, day(t, "2026-11-04"))
+		if !tr.Saved(day(t, "2026-11-03")) || tr.Saved(day(t, "2026-11-02")) {
+			t.Error("Saved should report only the bought day")
+		}
+	})
+	t.Run("cool-off day holds the daily streak", func(t *testing.T) {
+		cool := days(t, "2026-11-03")
+		habits := []Habit{
+			{Schedules: daily, CheckIns: days(t, "2026-11-02", "2026-11-03", "2026-11-04"), CoolOffs: cool},
+			{Schedules: daily, CheckIns: days(t, "2026-11-02", "2026-11-04"), CoolOffs: cool},
+		}
+		if got := ComputeDaily(habits, day(t, "2026-11-04")); got.Current != 3 {
+			t.Errorf("current=%d, want 3", got.Current)
+		}
+	})
+}

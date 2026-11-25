@@ -36,7 +36,7 @@ function LoginPage() {
 
   return (
     <main className="flex min-h-svh items-center justify-center p-4">
-      <div className="flex w-full max-w-sm flex-col gap-6">
+      <div className="page-enter flex w-full max-w-sm flex-col gap-6">
         <Logo className="justify-center text-lg" />
         <Card>
           <CardContent className="flex flex-col gap-5">

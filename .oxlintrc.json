@@ -14,7 +14,8 @@
   "ignorePatterns": [
     "**/routeTree.gen.ts",
     "**/worker-configuration.d.ts",
-    "**/dist/**"
+    "**/dist/**",
+    "**/components/ui/**"
   ],
   "rules": {
     "react/react-in-jsx-scope": "off"

@@ -36,6 +36,7 @@ type fakeServices struct {
 	dead      map[string]bool // Google refresh tokens now rejected.
 	noRefresh map[string]bool // Codes that return no refresh token, like a returning user.
 	noScope   map[string]bool // Codes where the user unticked Tasks.
+	readOnly  map[string]bool // Users whose token can only read tasks.
 	ghIssued  int             // GitHub tokens handed out.
 	ghDead    map[string]bool // GitHub tokens the events API now refuses.
 }
@@ -70,7 +71,12 @@ func (f *fakeServices) server() *httptest.Server {
 			fmt.Fprint(w, `{"error":"invalid_grant"}`)
 			return
 		}
-		fmt.Fprintf(w, `{"access_token":"at-%s"}`, strings.TrimPrefix(token, "rt-"))
+		who := strings.TrimPrefix(token, "rt-")
+		if f.readOnly[who] {
+			fmt.Fprintf(w, `{"access_token":"at-%s","scope":%q}`, who, gtasks.ReadOnlyScope)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":"at-%s"}`, who)
 	})
 	mux.HandleFunc("POST /revoke", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -85,6 +91,24 @@ func (f *fakeServices) server() *httptest.Server {
 		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer at-")
 		// All users deliberately share a task ID.
 		fmt.Fprintf(w, `{"items":[{"id":"t1","title":"%s task","status":"needsAction","due":"2026-11-04T00:00:00.000Z"}]}`, who)
+	})
+	mux.HandleFunc("PATCH /lists/L/tasks/t1", func(w http.ResponseWriter, r *http.Request) {
+		who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer at-")
+		f.mu.Lock()
+		readOnly := f.readOnly[who]
+		f.mu.Unlock()
+		if readOnly {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"error":{"code":403,"message":"Request had insufficient authentication scopes."}}`)
+			return
+		}
+		var body struct{ Status string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		completed := ""
+		if body.Status == "completed" {
+			completed = `,"completed":"2026-11-04T06:00:00Z"`
+		}
+		fmt.Fprintf(w, `{"id":"t1","title":"%s task","status":"%s","due":"2026-11-04T00:00:00.000Z"%s}`, who, body.Status, completed)
 	})
 	mux.HandleFunc("POST /login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -314,8 +338,10 @@ type summary struct {
 	}
 	Tasks struct {
 		Total          int
+		Completed      int
 		NeedsReconnect bool `json:"needs_reconnect"`
-		Items          []struct{ Title string }
+		ReadOnly       bool `json:"read_only"`
+		Items          []struct{ Title, Status string }
 	}
 	GitHub struct {
 		Linked        bool
@@ -365,6 +391,7 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 		revoked: map[string]bool{}, dead: map[string]bool{}, ghDead: map[string]bool{},
 		noRefresh: map[string]bool{"code-alice-return": true, "code-dave-first": true, "code-bob-return": true},
 		noScope:   map[string]bool{"code-erin": true},
+		readOnly:  map[string]bool{"bob": true},
 	}
 	services := fake.server()
 	defer services.Close()
@@ -446,9 +473,57 @@ func TestLoginFlowAndIsolation(t *testing.T) {
 	}
 	aliceID, _ := b.me().active()
 
+	// --- Rewards: Alice has no completed tasks, so no points to spend ---
+	var rewards struct {
+		Wallet struct{ Balance int }
+		Costs  struct {
+			CoolOff int `json:"cool_off"`
+		}
+	}
+	if code := b.call(http.MethodGet, "/rewards", nil, &rewards); code != http.StatusOK || rewards.Wallet.Balance != 0 || rewards.Costs.CoolOff == 0 {
+		t.Errorf("rewards: %d %+v", code, rewards)
+	}
+	if code := b.call(http.MethodPost, "/rewards/cool-offs/2026-11-30", nil, nil); code != http.StatusUnprocessableEntity {
+		t.Errorf("cool-off too far ahead: %d", code)
+	}
+	if code := b.call(http.MethodPost, "/rewards/cool-offs/2026-11-05", nil, nil); code != http.StatusConflict {
+		t.Errorf("cool-off without points: %d", code)
+	}
+	if code := b.call(http.MethodPost, fmt.Sprintf("/habits/%d/saves/2026-11-04", aliceHabit.ID), nil, nil); code != http.StatusConflict {
+		t.Errorf("saving a day that's done: %d", code)
+	}
+
+	// --- Alice ticks off her task: Google is updated and she earns a point ---
+	var task struct{ Status string }
+	if code := b.call(http.MethodPut, "/tasks/t1/done", nil, &task); code != http.StatusOK || task.Status != "completed" {
+		t.Fatalf("complete task: %d %+v", code, task)
+	}
+	if s := b.summary(); s.Tasks.Completed != 1 || s.Tasks.Items[0].Status != "completed" {
+		t.Errorf("summary after completing = %+v", s.Tasks)
+	}
+	if code := b.call(http.MethodGet, "/rewards", nil, &rewards); code != http.StatusOK || rewards.Wallet.Balance != 1 {
+		t.Errorf("balance after completing a task: %+v", rewards)
+	}
+	if code := b.call(http.MethodDelete, "/tasks/t1/done", nil, &task); code != http.StatusOK || task.Status != "needsAction" {
+		t.Errorf("reopen task: %d %+v", code, task)
+	}
+	if code := b.call(http.MethodGet, "/rewards", nil, &rewards); rewards.Wallet.Balance != 1 {
+		t.Errorf("reopening must not take the point back: %d %+v", code, rewards)
+	}
+	if code := b.call(http.MethodPut, "/tasks/nope/done", nil, nil); code != http.StatusNotFound {
+		t.Errorf("unknown task: %d", code)
+	}
+
 	// --- Bob joins the same browser and becomes active ---
 	if loc := b.login("code-bob"); loc != "/" {
 		t.Fatalf("bob login: %q", loc)
+	}
+	// Bob's token is read-only: it syncs, but asks him to reconnect to tick tasks off.
+	if s := b.summary(); !s.Tasks.ReadOnly || s.Tasks.NeedsReconnect || s.Tasks.Total != 1 {
+		t.Errorf("bob's read-only tasks = %+v", s.Tasks)
+	}
+	if code := b.call(http.MethodPut, "/tasks/t1/done", nil, nil); code != http.StatusForbidden {
+		t.Errorf("read-only complete: %d", code)
 	}
 	m := b.me()
 	bobID, email := m.active()

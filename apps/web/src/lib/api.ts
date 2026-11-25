@@ -2,7 +2,7 @@
 // HttpOnly session cookie goes with them automatically.
 
 export type Source = "manual" | "github"
-export type DayState = "done" | "bonus" | "missed" | "pending" | "rest"
+export type DayState = "done" | "saved" | "bonus" | "missed" | "pending" | "cool_off" | "rest"
 
 export interface StreakResult {
   current: number
@@ -26,6 +26,8 @@ export interface HistoryDay {
   day: string
   scheduled: boolean
   done: boolean
+  saved: boolean
+  cool_off: boolean
   contributions?: number
 }
 
@@ -56,7 +58,8 @@ export interface GitHubAccount {
 
 export interface Me {
   accounts: Account[]
-  google: { needs_reconnect: boolean; sync: SyncRun }
+  // read_only: the token syncs but can't tick tasks off until Google is reconnected.
+  google: { needs_reconnect: boolean; read_only: boolean; sync: SyncRun }
   github: { accounts: GitHubAccount[]; sync: SyncRun; connect_enabled: boolean }
   email: { address: string; enabled: boolean; configured: boolean }
 }
@@ -65,7 +68,7 @@ export interface SummaryHabit {
   id: number
   name: string
   source: Source
-  status: "done" | "pending" | "rest"
+  status: "done" | "pending" | "cool_off" | "rest"
   contributions?: number
   streak: StreakResult
   recent: { day: string; state: DayState }[]
@@ -80,6 +83,30 @@ export interface SummaryTask {
   completed_at: string | null
 }
 
+export interface Wallet {
+  earned: number
+  spent: number
+  balance: number
+  earned_today: number
+}
+
+export interface RewardEvent {
+  kind: "earned" | "cool_off" | "habit_save"
+  day: string
+  title: string
+  points: number
+  created_at: string
+}
+
+export interface Rewards {
+  wallet: Wallet
+  daily_cap: number
+  costs: { cool_off: number; habit_save: number }
+  window: { back: number; ahead: number }
+  cool_offs: { day: string; refundable: boolean }[]
+  history: RewardEvent[]
+}
+
 export interface Summary {
   date: string
   habits: SummaryHabit[]
@@ -88,10 +115,13 @@ export interface Summary {
     completed: number
     overdue: number
     items: SummaryTask[]
+    later: SummaryTask[] // Open tasks with no date or a future one.
     sync: SyncRun
     needs_reconnect: boolean
+    read_only: boolean // Syncs, but can't tick tasks off until Google is reconnected.
   }
   streaks: { daily: StreakResult }
+  rewards: Wallet
   github: { linked: boolean; contributions: number; sync: SyncRun }
 }
 
@@ -159,6 +189,14 @@ export const api = {
   checkIn: (id: number, day: string) => request<Habit>("PUT", `/habits/${id}/check-ins/${day}`),
   undoCheckIn: (id: number, day: string) =>
     request<Habit>("DELETE", `/habits/${id}/check-ins/${day}`),
+  rewards: () => request<Rewards>("GET", "/rewards"),
+  bookCoolOff: (day: string) => request<Rewards>("POST", `/rewards/cool-offs/${day}`),
+  cancelCoolOff: (day: string) => request<Rewards>("DELETE", `/rewards/cool-offs/${day}`),
+  saveStreak: (id: number, day: string) => request<Habit>("POST", `/habits/${id}/saves/${day}`),
+  // Marks a Google Task done, or open again, in Google and in the cache. Both are
+  // idempotent and return the task's new state. Completing earns its reward point.
+  completeTask: (id: string) => request<SummaryTask>("PUT", `/tasks/${encodeURIComponent(id)}/done`),
+  reopenTask: (id: string) => request<SummaryTask>("DELETE", `/tasks/${encodeURIComponent(id)}/done`),
   syncGitHub: () => request<SyncRun>("POST", "/sync/github"),
   syncGoogleTasks: () => request<SyncRun>("POST", "/sync/google-tasks"),
 }

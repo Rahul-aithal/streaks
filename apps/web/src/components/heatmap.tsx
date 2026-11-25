@@ -1,4 +1,4 @@
-import { dayCellClass, DAY_LABEL } from "@/components/day-cell"
+import { cellState, dayCellClass, DAY_LABEL } from "@/components/day-cell"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { DayState, HistoryDay } from "@/lib/api"
 import { formatDay, formatLong, weekdayOf } from "@/lib/dates"
@@ -6,17 +6,13 @@ import { cn } from "@/lib/utils"
 
 const LEGEND: { state: DayState; label: string }[] = [
   { state: "done", label: "Done" },
+  { state: "saved", label: "Saved" },
   { state: "bonus", label: "Non-target day" },
   { state: "missed", label: "Missed" },
   { state: "pending", label: "Today" },
+  { state: "cool_off", label: "Cool-off" },
   { state: "rest", label: "Nothing scheduled" },
 ]
-
-export function cellState(d: HistoryDay, today: string): DayState {
-  if (d.done) return d.scheduled ? "done" : "bonus"
-  if (!d.scheduled) return "rest"
-  return d.day < today ? "missed" : "pending"
-}
 
 const CELL_SIZE = "size-3"
 const WEEK_WIDTH = 15 // Cell (12px) plus gap (3px).

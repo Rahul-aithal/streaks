@@ -20,6 +20,11 @@ type Schedule struct {
 type Habit struct {
 	Schedules []Schedule // Any order.
 	CheckIns  []Day      // Any order.
+	// Saves are days bought back with reward points. They count as done.
+	Saves []Day
+	// CoolOffs are the user's cool-off days: a scheduled day that isn't done
+	// neither breaks the streak nor adds to it.
+	CoolOffs []Day
 }
 
 // Result is the outcome of a streak calculation.
@@ -56,6 +61,8 @@ func DaysFromMask(mask uint8) []int {
 type Tracker struct {
 	schedules []Schedule
 	done      map[Day]struct{}
+	saved     map[Day]struct{}
+	coolOff   map[Day]struct{}
 	start     Day
 	hasStart  bool
 	last      *Day
@@ -67,13 +74,23 @@ type Tracker struct {
 func NewTracker(h Habit, today Day) *Tracker {
 	t := &Tracker{
 		schedules: slices.Clone(h.Schedules),
-		done:      make(map[Day]struct{}, len(h.CheckIns)),
+		done:      make(map[Day]struct{}, len(h.CheckIns)+len(h.Saves)),
+		saved:     make(map[Day]struct{}, len(h.Saves)),
+		coolOff:   make(map[Day]struct{}, len(h.CoolOffs)),
+	}
+	for _, d := range h.CoolOffs {
+		t.coolOff[d] = struct{}{}
 	}
 	slices.SortFunc(t.schedules, func(a, b Schedule) int { return int(a.From - b.From) })
 	if len(t.schedules) > 0 {
 		t.start, t.hasStart = t.schedules[0].From, true
 	}
-	for _, d := range h.CheckIns {
+	for _, d := range h.Saves {
+		if d <= today {
+			t.saved[d] = struct{}{}
+		}
+	}
+	for _, d := range slices.Concat(h.CheckIns, h.Saves) {
 		if d > today {
 			continue // Future check-ins are ignored rather than counted early.
 		}
@@ -104,15 +121,28 @@ func (t *Tracker) Scheduled(d Day) bool {
 	return mask&(1<<d.Weekday()) != 0
 }
 
-// Done reports whether there is a check-in on d.
+// Done reports whether there is a check-in or a save on d.
 func (t *Tracker) Done(d Day) bool {
 	_, ok := t.done[d]
 	return ok
 }
 
+// Saved reports whether d was bought back with reward points.
+func (t *Tracker) Saved(d Day) bool {
+	_, ok := t.saved[d]
+	return ok
+}
+
+// CoolOff reports whether d is one of the user's cool-off days.
+func (t *Tracker) CoolOff(d Day) bool {
+	_, ok := t.coolOff[d]
+	return ok
+}
+
 // Compute returns the streaks of a single habit. Only target days count: a
 // non-target day neither breaks the streak nor adds to it, even with a
-// check-in. An unfinished today doesn't break the streak.
+// check-in. An unfinished today doesn't break the streak, and neither does an
+// unfinished cool-off day.
 func Compute(h Habit, today Day) Result {
 	t := NewTracker(h, today)
 	r := walk(t.start, t.hasStart, today, func(d Day) dayState {
@@ -121,6 +151,8 @@ func Compute(h Habit, today Day) Result {
 			return dayRest
 		case t.Done(d):
 			return dayDone
+		case t.CoolOff(d):
+			return dayRest
 		}
 		return dayMissed
 	})
@@ -148,6 +180,9 @@ func ComputeDaily(habits []Habit, today Day) Result {
 				continue
 			}
 			if !t.Done(d) {
+				if t.CoolOff(d) {
+					continue
+				}
 				return dayMissed
 			}
 			state = dayDone

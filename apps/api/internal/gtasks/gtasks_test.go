@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +59,27 @@ func TestForToday(t *testing.T) {
 	}
 }
 
+func TestLater(t *testing.T) {
+	today := *mustDay(t, "2026-11-04")
+	tasks := []store.Task{
+		{Title: "undated open", Status: "needsAction"},
+		{Title: "next week", Status: "needsAction", Due: mustDay(t, "2026-11-11")},
+		{Title: "due today", Status: "needsAction", Due: mustDay(t, "2026-11-04")},
+		{Title: "tomorrow", Status: "needsAction", Due: mustDay(t, "2026-11-05")},
+		{Title: "undated done today", Status: "completed", CompletedAt: mustTime(t, "2026-11-04T05:00:00Z")},
+		{Title: "undated done yesterday", Status: "completed", CompletedAt: mustTime(t, "2026-11-03T05:00:00Z")},
+		{Title: "future done", Status: "completed", Due: mustDay(t, "2026-11-09"), CompletedAt: mustTime(t, "2026-11-04T05:00:00Z")},
+	}
+	var got []string
+	for _, task := range Later(tasks, today) {
+		got = append(got, task.Title)
+	}
+	want := []string{"tomorrow", "next week", "undated open", "undated done today"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Later = %v, want %v", got, want)
+	}
+}
+
 func TestConvert(t *testing.T) {
 	today := *mustDay(t, "2026-11-04")
 
@@ -100,7 +123,7 @@ func TestFetchTasksRequestsHiddenAndPages(t *testing.T) {
 
 	c := NewClient("id", "secret", "http://cb")
 	c.BaseURL, c.TokenURL = srv.URL, srv.URL+"/token"
-	got, err := c.FetchTasks(context.Background(), "rt", *mustDay(t, "2026-11-04"))
+	got, _, err := c.FetchTasks(context.Background(), "rt", *mustDay(t, "2026-11-04"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +144,22 @@ func TestExpiredRefreshTokenAsksToReconnect(t *testing.T) {
 
 	c := NewClient("id", "topsecret", "http://cb")
 	c.TokenURL = srv.URL
-	_, err := c.FetchTasks(context.Background(), "rt", 0)
+	_, _, err := c.FetchTasks(context.Background(), "rt", 0)
 	if !errors.Is(err, ErrReconnect) {
+		t.Errorf("err = %v, want ErrReconnect", err)
+	}
+}
+
+func TestRefreshTokenFromAnotherClientAsksToReconnect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"unauthorized_client","error_description":"Unauthorized"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient("new-id", "topsecret", "http://cb")
+	c.TokenURL = srv.URL
+	if _, _, err := c.FetchTasks(context.Background(), "rt", 0); !errors.Is(err, ErrReconnect) {
 		t.Errorf("err = %v, want ErrReconnect", err)
 	}
 }
@@ -191,5 +228,94 @@ func TestExchangeCode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetTaskStatus(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	status := http.StatusOK
+	reply := ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	})
+	mux.HandleFunc("/lists/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotMethod, gotPath, gotBody = r.Method, r.URL.EscapedPath(), string(body)
+		w.WriteHeader(status)
+		fmt.Fprint(w, reply)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewClient("id", "secret", "http://cb")
+	c.TokenURL, c.BaseURL = srv.URL+"/token", srv.URL
+
+	reply = `{"id":"t/1","title":"Write","status":"completed","due":"2026-11-04T00:00:00.000Z","completed":"2026-11-04T05:00:00Z"}`
+	got, err := c.SetTaskStatus(context.Background(), "rt", "L 1", "t/1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPatch || gotPath != "/lists/L%201/tasks/t%2F1" || gotBody != `{"status":"completed"}` {
+		t.Errorf("request = %s %s %s", gotMethod, gotPath, gotBody)
+	}
+	if got.Status != "completed" || got.CompletedAt == nil || got.ListID != "L 1" || got.Due == nil || got.Due.String() != "2026-11-04" {
+		t.Errorf("task = %+v", got)
+	}
+
+	reply = `{"id":"t/1","title":"Write","status":"needsAction"}`
+	if _, err := c.SetTaskStatus(context.Background(), "rt", "L 1", "t/1", false); err != nil || !strings.Contains(gotBody, `"completed":null`) {
+		t.Errorf("reopen: body %s, err %v", gotBody, err)
+	}
+
+	status, reply = http.StatusForbidden, `{"error":{"code":403,"message":"Request had insufficient authentication scopes.","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}`
+	if _, err := c.SetTaskStatus(context.Background(), "rt", "L", "t", true); !errors.Is(err, ErrNeedsWriteAccess) {
+		t.Errorf("read-only token: %v", err)
+	}
+	status, reply = http.StatusNotFound, `{"error":{"code":404}}`
+	if _, err := c.SetTaskStatus(context.Background(), "rt", "L", "t", true); !errors.Is(err, ErrTaskGone) {
+		t.Errorf("deleted task: %v", err)
+	}
+}
+
+func TestFetchTasksReportsWriteAccess(t *testing.T) {
+	scope := ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"access_token":"at","scope":%q}`, scope)
+	})
+	mux.HandleFunc("GET /users/@me/lists", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"items":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewClient("id", "secret", "http://cb")
+	c.TokenURL, c.BaseURL = srv.URL+"/token", srv.URL
+
+	for _, tc := range []struct {
+		scope    string
+		writable bool
+	}{
+		{ReadOnlyScope, false},
+		{TasksScope + " openid", true},
+		{"", true}, // Unknown: don't nag.
+	} {
+		scope = tc.scope
+		_, writable, err := c.FetchTasks(context.Background(), "rt", 0)
+		if err != nil || writable != tc.writable {
+			t.Errorf("scope %q: writable=%v err=%v, want %v", tc.scope, writable, err, tc.writable)
+		}
+	}
+}
+
+func TestReadOnlySignInIsAllowed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"refresh_token":"rt","scope":"openid %s","id_token":%q}`, ReadOnlyScope,
+			idToken(`{"sub":"1","email":"a@example.com","email_verified":true}`))
+	}))
+	defer srv.Close()
+	c := NewClient("id", "secret", "http://cb")
+	c.TokenURL = srv.URL
+	if _, err := c.ExchangeCode(context.Background(), "code"); err != nil {
+		t.Errorf("read-only sign-in: %v", err)
 	}
 }

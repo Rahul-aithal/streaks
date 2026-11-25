@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { createRootRouteWithContext, HeadContent, Link, Outlet, Scripts } from "@tanstack/react-router"
+import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from "@tanstack/react-router"
 import type { ReactNode } from "react"
+import { NotFoundPage } from "@/components/status-page"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { THEME_SCRIPT } from "@/lib/theme"
@@ -25,14 +26,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   }),
   shellComponent: Document,
   component: App,
-  notFoundComponent: () => (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-      <p>Page not found.</p>
-      <Link to="/" className="underline">
-        Go to Today
-      </Link>
-    </div>
-  ),
+  notFoundComponent: () => <NotFoundPage />,
 })
 
 function Document({ children }: { children: ReactNode }) {
