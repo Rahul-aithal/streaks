@@ -114,7 +114,7 @@ func TestScheduledSends(t *testing.T) {
 	}
 	clock = clock.Add(6 * time.Minute)
 	r.tick(ctx)
-	if mail.count() != 2 || mail.sent[1].Subject != "Streaks: 0 of 1 habit done today" {
+	if mail.count() != 2 || mail.sent[1].Subject != "Nothing checked in yet. Today still counts" {
 		t.Errorf("retry: %+v", mail.sent)
 	}
 
@@ -130,7 +130,7 @@ func TestScheduledSends(t *testing.T) {
 	if err := r.SendTest(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	if got := mail.sent[2].Subject; got != "[Test] Streaks: 1 habit left today" {
+	if got := mail.sent[2].Subject; got != "[Test] 1 habit left. Finish strong" {
 		t.Errorf("test subject = %q", got)
 	}
 	c, _ := st.GetUser(ctx, carol)

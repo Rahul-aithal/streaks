@@ -47,36 +47,36 @@ func TestBuild(t *testing.T) {
 		{
 			name: "morning, one streak running", slot: 0,
 			habits:  []store.Habit{habit("read", nil, "2026-11-02", "2026-11-03"), habit("gym", nil)},
-			subject: "Streaks: 2 habits to do today",
+			subject: "2 habits today. Start with the easy one",
 			todo:    []string{"read:2:true", "gym:0:false"},
 		},
 		{
 			name: "afternoon counts progress", slot: 1,
 			habits:  []store.Habit{habit("read", nil, "2026-11-03", "2026-11-04"), habit("gym", nil)},
-			subject: "Streaks: 1 of 2 habits done today",
+			subject: "1 of 2 done. Keep going!",
 			todo:    []string{"gym:0:false"}, done: 1,
 		},
 		{
 			name: "night warns about streaks at risk", slot: 2,
 			habits:  []store.Habit{habit("read", nil, "2026-11-03"), habit("gym", nil, "2026-11-03")},
-			subject: "Streaks: 2 streaks ending at midnight",
+			subject: "🔥 2 streaks end at midnight, up to 1 day",
 			todo:    []string{"read:1:true", "gym:1:true"},
 		},
 		{
 			name: "night with nothing at risk", slot: 2,
 			habits:  []store.Habit{habit("gym", nil)},
-			subject: "Streaks: 1 habit left today",
+			subject: "1 habit left. Finish strong",
 			todo:    []string{"gym:0:false"},
 		},
 		{
 			name: "all done", slot: 2,
 			habits:  []store.Habit{habit("read", nil, "2026-11-04")},
-			subject: "Streaks: all 1 habit done today", done: 1,
+			subject: "🎉 All done for today. Streak safe!", done: 1,
 		},
 		{
 			name: "only rest days", slot: 0,
 			habits:  []store.Habit{habit("hike", weekends), archived},
-			subject: "Streaks: rest day, your streaks are safe", rest: 1,
+			subject: "😌 Rest day. Your streaks are safe", rest: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -160,6 +160,97 @@ func TestDueSlot(t *testing.T) {
 		}
 		if got != tt.slot {
 			t.Errorf("%s: slot = %q, want %q", tt.now, got, tt.slot)
+		}
+	}
+}
+
+func TestLeadAndCta(t *testing.T) {
+	today := day("2026-11-04")
+	tests := []struct {
+		name   string
+		habits []store.Habit
+		slot   int
+		lead   string
+		cta    string
+	}{
+		{"morning", []store.Habit{habit("gym", nil)}, 0, "On today: “gym”", "Check in now"},
+		{"afternoon", []store.Habit{habit("a", nil, "2026-11-04"), habit("b", nil)}, 1, "1 down, 1 to go: “b”", "Check in now"},
+		{"night, one streak at risk", []store.Habit{habit("a", nil, "2026-11-03")}, 2, "your 1-day streak ends at midnight", "Check in now"},
+		{"night, two streaks at risk", []store.Habit{habit("a", nil, "2026-11-03"), habit("b", nil, "2026-11-03")}, 2, "those streaks end at midnight", "Check in now"},
+		{"night, nothing at risk", []store.Habit{habit("a", nil)}, 2, "close out the day", "Check in now"},
+		{"afternoon, nothing yet", []store.Habit{habit("a", nil), habit("b", nil)}, 1, "haven't checked in anything yet. Still to do: “a” and “b”.", "Check in now"},
+		{"all done", []store.Habit{habit("a", nil, "2026-11-04")}, 0, "Every habit is checked off", "Open Streaks"},
+		{"rest", []store.Habit{habit("a", []int{0, 6})}, 0, "Enjoy the break", "Open Streaks"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, ok := Build(tt.habits, today, Slots[tt.slot], "http://app")
+			if !ok {
+				t.Fatal("nothing built")
+			}
+			if !strings.Contains(d.Lead, tt.lead) {
+				t.Errorf("lead = %q, want it to contain %q", d.Lead, tt.lead)
+			}
+			if d.Cta() != tt.cta {
+				t.Errorf("cta = %q, want %q", d.Cta(), tt.cta)
+			}
+			m, err := d.Message("me@example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(m.HTML, tt.cta) || !strings.Contains(m.Text, d.Lead) {
+				t.Errorf("email missing cta or lead:\n%s", m.Text)
+			}
+		})
+	}
+}
+
+func TestMessageWithoutAppURL(t *testing.T) {
+	d, _ := Build([]store.Habit{habit("gym", nil)}, day("2026-11-04"), Slots[0], "")
+	m, err := d.Message("me@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(m.HTML, "<a href") || strings.Contains(m.Text, "Open Streaks") {
+		t.Error("no app URL should mean no button or link")
+	}
+}
+
+func TestSubjectAfternoonNothingYet(t *testing.T) {
+	d, _ := Build([]store.Habit{habit("a", nil)}, day("2026-11-04"), Slots[1], "")
+	if d.Subject != "Nothing checked in yet. Today still counts" {
+		t.Errorf("subject = %q", d.Subject)
+	}
+}
+
+func TestSubjectSingleStreakAtRisk(t *testing.T) {
+	d, _ := Build([]store.Habit{habit("a", nil, "2026-11-02", "2026-11-03")}, day("2026-11-04"), Slots[2], "")
+	if d.Subject != "🔥 Your 2-day streak ends at midnight" {
+		t.Errorf("subject = %q", d.Subject)
+	}
+}
+
+func TestNames(t *testing.T) {
+	l := func(n ...string) []Line {
+		var out []Line
+		for _, s := range n {
+			out = append(out, Line{Name: s})
+		}
+		return out
+	}
+	tests := []struct {
+		in   []Line
+		want string
+	}{
+		{nil, ""},
+		{l("a"), "“a”"},
+		{l("a", "b"), "“a” and “b”"},
+		{l("a", "b", "c"), "“a”, “b” and “c”"},
+		{l("a", "b", "c", "d", "e"), "“a”, “b” and 3 more"},
+	}
+	for _, tt := range tests {
+		if got := names(tt.in); got != tt.want {
+			t.Errorf("names = %q, want %q", got, tt.want)
 		}
 	}
 }
