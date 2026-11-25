@@ -116,6 +116,14 @@ func (s *Store) SaveTasks(ctx context.Context, userID int64, tasks []Task, day s
 			userID, ids, lists, titles, statuses, dues, completed); err != nil {
 			return err
 		}
+		// Each completed task earns once, ever. Google only returns tasks completed
+		// in the last week, so connecting an old account can't flood the ledger.
+		if _, err := tx.Exec(ctx, `INSERT INTO task_completions (user_id, google_id, title, day)
+			SELECT user_id, google_id, title, (completed_at AT TIME ZONE 'Asia/Kolkata')::date
+			FROM tasks WHERE user_id = $1 AND status = 'completed' AND completed_at IS NOT NULL
+			ON CONFLICT (user_id, google_id) DO NOTHING`, userID); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO task_snapshots (user_id, day, total, completed, overdue)
 			VALUES ($1, $2::date, $3, $4, $5)
 			ON CONFLICT (user_id, day) DO UPDATE SET total = EXCLUDED.total, completed = EXCLUDED.completed,
@@ -142,6 +150,49 @@ func (s *Store) ListTasks(ctx context.Context, userID int64) ([]Task, error) {
 		return err
 	})
 	return tasks, err
+}
+
+// GetTask returns one of a user's cached tasks. Another user's is ErrNotFound.
+func (s *Store) GetTask(ctx context.Context, userID int64, googleID string) (Task, error) {
+	var t Task
+	err := s.run(ctx, func(ctx context.Context) error {
+		err := s.pool.QueryRow(ctx, `SELECT google_id, list_id, title, status, due, completed_at
+			FROM tasks WHERE user_id = $1 AND google_id = $2`, userID, googleID).
+			Scan(&t.GoogleID, &t.ListID, &t.Title, &t.Status, &t.Due, &t.CompletedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return t, err
+}
+
+// UpdateTask stores a task's new state after a change made in Google, and
+// earns its point right away if it's now completed. Reopening it keeps the
+// point, as a sync would: each task earns once, ever.
+func (s *Store) UpdateTask(ctx context.Context, userID int64, t Task) error {
+	return s.tx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE tasks SET title = $3, status = $4, due = $5, completed_at = $6, synced_at = now()
+			WHERE user_id = $1 AND google_id = $2`,
+			userID, t.GoogleID, t.Title, t.Status, t.Due, t.CompletedAt); err != nil {
+			return err
+		}
+		if t.Status != "completed" || t.CompletedAt == nil {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO task_completions (user_id, google_id, title, day)
+			VALUES ($1, $2, $3, ($4::timestamptz AT TIME ZONE 'Asia/Kolkata')::date)
+			ON CONFLICT (user_id, google_id) DO NOTHING`, userID, t.GoogleID, t.Title, *t.CompletedAt)
+		return err
+	})
+}
+
+// DeleteTask drops a task from the cache, for one deleted in Google.
+func (s *Store) DeleteTask(ctx context.Context, userID int64, googleID string) error {
+	return s.run(ctx, func(ctx context.Context) error {
+		_, err := s.pool.Exec(ctx, `DELETE FROM tasks WHERE user_id = $1 AND google_id = $2`, userID, googleID)
+		return err
+	})
 }
 
 // SyncRun is the last recorded outcome of a sync kind.

@@ -20,6 +20,25 @@ type Habit struct {
 	UpdatedAt  time.Time
 	Schedules  []streak.Schedule
 	CheckIns   []streak.Day
+	Saves      []streak.Day // Days bought back with reward points.
+	CoolOffs   []streak.Day // The user's cool-off days, shared by all their habits.
+}
+
+// StreakInput is what streak calculation needs from a habit.
+func (h Habit) StreakInput() streak.Habit {
+	return streak.Habit{Schedules: h.Schedules, CheckIns: h.CheckIns, Saves: h.Saves, CoolOffs: h.CoolOffs}
+}
+
+func coolOffDays(ctx context.Context, q pgxQuerier, userID int64) ([]streak.Day, error) {
+	rows, err := q.Query(ctx, `SELECT day FROM reward_spends WHERE user_id = $1 AND kind = 'cool_off' ORDER BY day`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[streak.Day])
+}
+
+type pgxQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 const habitColumns = `id, name, source, archived_at, created_at, updated_at`
@@ -74,12 +93,33 @@ func (s *Store) ListHabits(ctx context.Context, userID int64) ([]Habit, error) {
 			return err
 		}
 		var day streak.Day
-		_, err = pgx.ForEachRow(rows, []any{&id, &day}, func() error {
+		if _, err := pgx.ForEachRow(rows, []any{&id, &day}, func() error {
 			if h := byID[id]; h != nil {
 				h.CheckIns = append(h.CheckIns, day)
 			}
 			return nil
-		})
+		}); err != nil {
+			return err
+		}
+
+		rows, err = s.pool.Query(ctx, `SELECT habit_id, day FROM reward_spends
+			WHERE user_id = $1 AND kind = 'habit_save' AND habit_id IS NOT NULL`, userID)
+		if err != nil {
+			return err
+		}
+		if _, err := pgx.ForEachRow(rows, []any{&id, &day}, func() error {
+			if h := byID[id]; h != nil {
+				h.Saves = append(h.Saves, day)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		coolOffs, err := coolOffDays(ctx, s.pool, userID)
+		for i := range habits {
+			habits[i].CoolOffs = coolOffs
+		}
 		return err
 	})
 	return habits, err
@@ -113,7 +153,17 @@ func (s *Store) GetHabit(ctx context.Context, userID, id int64) (Habit, error) {
 		if err != nil {
 			return err
 		}
-		h.CheckIns, err = pgx.CollectRows(rows, pgx.RowTo[streak.Day])
+		if h.CheckIns, err = pgx.CollectRows(rows, pgx.RowTo[streak.Day]); err != nil {
+			return err
+		}
+		rows, err = s.pool.Query(ctx, `SELECT day FROM reward_spends WHERE habit_id = $1 AND kind = 'habit_save'`, id)
+		if err != nil {
+			return err
+		}
+		if h.Saves, err = pgx.CollectRows(rows, pgx.RowTo[streak.Day]); err != nil {
+			return err
+		}
+		h.CoolOffs, err = coolOffDays(ctx, s.pool, userID)
 		return err
 	})
 	return h, err

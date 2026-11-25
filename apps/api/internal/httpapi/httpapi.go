@@ -53,9 +53,15 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /habits/{id}/check-ins/{day}", s.putCheckIn)
 	api.HandleFunc("DELETE /habits/{id}/check-ins/{day}", s.deleteCheckIn)
 	api.HandleFunc("GET /habits/{id}/history", s.habitHistory)
+	api.HandleFunc("POST /habits/{id}/saves/{day}", s.buySave)
+	api.HandleFunc("GET /rewards", s.getRewards)
+	api.HandleFunc("POST /rewards/cool-offs/{day}", s.buyCoolOff)
+	api.HandleFunc("DELETE /rewards/cool-offs/{day}", s.refundCoolOff)
 	api.HandleFunc("GET /streaks/daily", s.dailyStreak)
 	api.HandleFunc("POST /sync/github", s.syncNow(syncer.KindGitHub))
 	api.HandleFunc("POST /sync/google-tasks", s.syncNow(syncer.KindGoogle))
+	api.HandleFunc("PUT /tasks/{id}/done", s.completeTask)
+	api.HandleFunc("DELETE /tasks/{id}/done", s.reopenTask)
 	api.HandleFunc("GET /summary/today", s.summaryToday)
 	api.HandleFunc("GET /auth/me", s.me)
 	api.HandleFunc("POST /auth/switch", s.switchAccount)
@@ -114,12 +120,8 @@ func toHabitJSON(h store.Habit, today streak.Day) habitJSON {
 		ArchivedAt: h.ArchivedAt,
 		CreatedAt:  h.CreatedAt,
 		UpdatedAt:  h.UpdatedAt,
-		Streak:     streak.Compute(streakInput(h), today),
+		Streak:     streak.Compute(h.StreakInput(), today),
 	}
-}
-
-func streakInput(h store.Habit) streak.Habit {
-	return streak.Habit{Schedules: h.Schedules, CheckIns: h.CheckIns}
 }
 
 // targetMask is the newest non-archived mask, so an archived habit still shows
@@ -378,6 +380,8 @@ type historyDay struct {
 	Day           streak.Day `json:"day"`
 	Scheduled     bool       `json:"scheduled"`
 	Done          bool       `json:"done"`
+	Saved         bool       `json:"saved"`                   // Done by spending reward points.
+	CoolOff       bool       `json:"cool_off"`                // A cool-off day: missing it breaks nothing.
 	Contributions *int       `json:"contributions,omitempty"` // GitHub habits only.
 }
 
@@ -404,10 +408,11 @@ func (s *Server) habitHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	tracker := streak.NewTracker(streakInput(h), today)
+	tracker := streak.NewTracker(h.StreakInput(), today)
 	days := make([]historyDay, 0, int(to-from)+1)
 	for d := from; d <= to; d++ {
-		item := historyDay{Day: d, Scheduled: tracker.Scheduled(d), Done: tracker.Done(d)}
+		item := historyDay{Day: d, Scheduled: tracker.Scheduled(d), Done: tracker.Done(d),
+			Saved: tracker.Saved(d), CoolOff: tracker.CoolOff(d)}
 		if h.Source == "github" {
 			n := counts[d]
 			item.Contributions = &n
@@ -441,7 +446,7 @@ func parseRange(r *http.Request, today streak.Day) (from, to streak.Day, err err
 func dailyInputs(habits []store.Habit) []streak.Habit {
 	out := make([]streak.Habit, 0, len(habits))
 	for _, h := range habits {
-		out = append(out, streakInput(h))
+		out = append(out, h.StreakInput())
 	}
 	return out
 }
@@ -480,8 +485,9 @@ func (s *Server) syncNow(kind string) http.HandlerFunc {
 // --- Summary ---
 
 type recentDay struct {
-	Day   streak.Day `json:"day"`
-	State string     `json:"state"` // "done", "bonus", "missed", "pending" or "rest".
+	Day streak.Day `json:"day"`
+	// "done", "saved", "bonus", "missed", "pending", "cool_off" or "rest".
+	State string `json:"state"`
 }
 
 const summaryRecentDays = 7
@@ -489,12 +495,16 @@ const summaryRecentDays = 7
 func dayState(t *streak.Tracker, d, today streak.Day) string {
 	scheduled, done := t.Scheduled(d), t.Done(d)
 	switch {
+	case done && t.Saved(d):
+		return "saved"
 	case done && scheduled:
 		return "done"
 	case done:
 		return "bonus"
 	case !scheduled:
 		return "rest"
+	case t.CoolOff(d):
+		return "cool_off"
 	case d < today:
 		return "missed"
 	}
@@ -502,10 +512,11 @@ func dayState(t *streak.Tracker, d, today streak.Day) string {
 }
 
 type summaryHabit struct {
-	ID            int64         `json:"id"`
-	Name          string        `json:"name"`
-	Source        string        `json:"source"`
-	Status        string        `json:"status"` // "done", "pending", or "rest" on a non-target day.
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	// "done", "pending", "cool_off" on a cool-off day, or "rest" on a non-target day.
+	Status        string        `json:"status"`
 	Contributions *int          `json:"contributions,omitempty"`
 	Streak        streak.Result `json:"streak"`
 	Recent        []recentDay   `json:"recent"`
@@ -541,6 +552,11 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	wallet, err := s.Store.GetWallet(ctx, id, today)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	googleRun, err := s.Store.GetSyncRun(ctx, id, syncer.KindGoogle)
 	if err != nil {
 		writeStoreError(w, err)
@@ -562,14 +578,16 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		if h.ArchivedAt != nil {
 			continue
 		}
-		tracker := streak.NewTracker(streakInput(h), today)
-		item := summaryHabit{ID: h.ID, Name: h.Name, Source: h.Source, Streak: streak.Compute(streakInput(h), today)}
+		tracker := streak.NewTracker(h.StreakInput(), today)
+		item := summaryHabit{ID: h.ID, Name: h.Name, Source: h.Source, Streak: streak.Compute(h.StreakInput(), today)}
 		for d := today - summaryRecentDays + 1; d <= today; d++ {
 			item.Recent = append(item.Recent, recentDay{Day: d, State: dayState(tracker, d, today)})
 		}
 		switch {
 		case tracker.Done(today):
 			item.Status = "done"
+		case tracker.Scheduled(today) && tracker.CoolOff(today):
+			item.Status = "cool_off"
 		case tracker.Scheduled(today):
 			item.Status = "pending"
 		default:
@@ -582,14 +600,17 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
-	todayTasks, snap := gtasks.ForToday(cached, today)
-	taskItems := make([]summaryTask, 0, len(todayTasks))
-	for _, t := range todayTasks {
-		taskItems = append(taskItems, summaryTask{
-			ID: t.GoogleID, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
-			Overdue: t.Status != "completed" && t.Due != nil && *t.Due < today,
-		})
+	toSummaryTasks := func(tasks []store.Task) []summaryTask {
+		out := make([]summaryTask, 0, len(tasks))
+		for _, t := range tasks {
+			out = append(out, summaryTask{
+				ID: t.GoogleID, Title: t.Title, Status: t.Status, Due: t.Due, CompletedAt: t.CompletedAt,
+				Overdue: t.Status != "completed" && t.Due != nil && *t.Due < today,
+			})
+		}
+		return out
 	}
+	todayTasks, snap := gtasks.ForToday(cached, today)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"date":   today,
@@ -598,10 +619,13 @@ func (s *Server) summaryToday(w http.ResponseWriter, r *http.Request) {
 			"total":           snap.Total,
 			"completed":       snap.Completed,
 			"overdue":         snap.Overdue,
-			"items":           taskItems,
+			"items":           toSummaryTasks(todayTasks),
+			"later":           toSummaryTasks(gtasks.Later(cached, today)), // Undated or due later.
 			"sync":            googleRun,
 			"needs_reconnect": sess.user.NeedsReconnect,
+			"read_only":       sess.user.GoogleReadOnly, // Can sync, but can't tick tasks off.
 		},
+		"rewards": wallet,
 		"streaks": map[string]any{
 			"daily": streak.ComputeDaily(dailyInputs(habits), today),
 		},
@@ -674,6 +698,14 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrGitHubHabitExists) {
 		writeError(w, http.StatusConflict,
 			"You already have a GitHub activity habit, and it counts all your pushes and PRs. Archive it to use another.")
+		return
+	}
+	if errors.Is(err, store.ErrNotEnoughPoints) {
+		writeError(w, http.StatusConflict, "Not enough points. Finish more tasks to earn them.")
+		return
+	}
+	if errors.Is(err, store.ErrAlreadySpent) {
+		writeError(w, http.StatusConflict, "You've already used a reward on that day.")
 		return
 	}
 	if errors.Is(err, context.Canceled) {

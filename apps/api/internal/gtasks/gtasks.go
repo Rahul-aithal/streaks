@@ -18,12 +18,26 @@ import (
 	"streaks/internal/streak"
 )
 
-// TasksScope is the only permission on the user's data. openid and email just
-// identify which account connected.
-const TasksScope = "https://www.googleapis.com/auth/tasks.readonly"
+// TasksScope is the only permission on the user's data: read tasks, and mark
+// them done or open again. openid and email just identify which account connected.
+const TasksScope = "https://www.googleapis.com/auth/tasks"
+
+// ReadOnlyScope is the old, read-only permission. A token with only this one
+// still syncs, but can't tick tasks off until the account reconnects.
+const ReadOnlyScope = "https://www.googleapis.com/auth/tasks.readonly"
 
 // ErrReconnect means Google no longer accepts the account's refresh token.
 var ErrReconnect = errors.New("Google access expired or was revoked: reconnect this account")
+
+// ErrNeedsWriteAccess means the account signed in when Streaks could only read
+// tasks. Signing in again grants the current scope.
+var ErrNeedsWriteAccess = errors.New("Streaks can only read your Google Tasks: reconnect Google to let it mark tasks done")
+
+// ErrTaskGone means the task no longer exists in Google Tasks.
+var ErrTaskGone = errors.New("this task no longer exists in Google Tasks")
+
+// errUnauthorizedClient means the grant belongs to a different OAuth client.
+var errUnauthorizedClient = errors.New("google token: unauthorized_client")
 
 // ErrMissingScope means the user unticked Tasks access on Google's consent screen.
 var ErrMissingScope = errors.New("Google Tasks access was not granted")
@@ -100,7 +114,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code string) (Identity, error
 	if err != nil {
 		return Identity{}, err
 	}
-	if !slices.Contains(strings.Fields(tok.Scope), TasksScope) {
+	if scopes := strings.Fields(tok.Scope); !slices.Contains(scopes, TasksScope) && !slices.Contains(scopes, ReadOnlyScope) {
 		return Identity{}, ErrMissingScope
 	}
 	identity, err := parseIDToken(tok.IDToken)
@@ -166,15 +180,19 @@ type rawTask struct {
 	Completed *time.Time `json:"completed"`
 }
 
-// FetchTasks returns one account's open and recently completed tasks from all its lists.
-func (c *Client) FetchTasks(ctx context.Context, refreshToken string, today streak.Day) ([]store.Task, error) {
-	token, err := c.accessToken(ctx, refreshToken)
+// FetchTasks returns one account's open and recently completed tasks from all
+// its lists, and whether its token may also change them.
+func (c *Client) FetchTasks(ctx context.Context, refreshToken string, today streak.Day) ([]store.Task, bool, error) {
+	tok, err := c.refresh(ctx, refreshToken)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	// Google lists the token's scopes. If it doesn't, don't nag about access.
+	writable := tok.Scope == "" || slices.Contains(strings.Fields(tok.Scope), TasksScope)
+	token := tok.AccessToken
 	lists, err := c.listIDs(ctx, token)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var out []store.Task
 	for _, list := range lists {
@@ -193,7 +211,7 @@ func (c *Client) FetchTasks(ctx context.Context, refreshToken string, today stre
 				NextPageToken string    `json:"nextPageToken"`
 			}
 			if err := c.get(ctx, token, "/lists/"+url.PathEscape(list)+"/tasks?"+q.Encode(), &page); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			for _, r := range page.Items {
 				if t, keep := convert(r, list, today); keep {
@@ -206,7 +224,7 @@ func (c *Client) FetchTasks(ctx context.Context, refreshToken string, today stre
 			pageToken = page.NextPageToken
 		}
 	}
-	return out, nil
+	return out, writable, nil
 }
 
 func convert(r rawTask, list string, today streak.Day) (store.Task, bool) {
@@ -252,6 +270,27 @@ func ForToday(tasks []store.Task, today streak.Day) ([]store.Task, store.TaskSna
 	return items, snap
 }
 
+// Later returns the tasks that aren't on today's view: open tasks with no date
+// or a future one, plus undated tasks completed today so finishing one shows.
+// Dated tasks come first, soonest first, then undated ones in input order.
+func Later(tasks []store.Task, today streak.Day) []store.Task {
+	dated, undated := []store.Task{}, []store.Task{}
+	for _, t := range tasks {
+		switch {
+		case t.Status == "completed":
+			if t.Due == nil && t.CompletedAt != nil && streak.DayOf(*t.CompletedAt) == today {
+				undated = append(undated, t)
+			}
+		case t.Due == nil:
+			undated = append(undated, t)
+		case *t.Due > today:
+			dated = append(dated, t)
+		}
+	}
+	slices.SortStableFunc(dated, func(a, b store.Task) int { return int(*a.Due - *b.Due) })
+	return append(dated, undated...)
+}
+
 func (c *Client) listIDs(ctx context.Context, token string) ([]string, error) {
 	var ids []string
 	pageToken := ""
@@ -279,20 +318,62 @@ func (c *Client) listIDs(ctx context.Context, token string) ([]string, error) {
 	}
 }
 
+// SetTaskStatus marks a task completed, or open again, and returns its new state.
+func (c *Client) SetTaskStatus(ctx context.Context, refreshToken, listID, taskID string, done bool) (store.Task, error) {
+	token, err := c.accessToken(ctx, refreshToken)
+	if err != nil {
+		return store.Task{}, err
+	}
+	// Reopening must clear the completion time too, or Google keeps it.
+	body := `{"status":"needsAction","completed":null}`
+	if done {
+		body = `{"status":"completed"}`
+	}
+	var r rawTask
+	path := "/lists/" + url.PathEscape(listID) + "/tasks/" + url.PathEscape(taskID)
+	if err := c.send(ctx, http.MethodPatch, token, path, strings.NewReader(body), &r); err != nil {
+		return store.Task{}, err
+	}
+	t := store.Task{GoogleID: r.ID, ListID: listID, Title: r.Title, Status: r.Status, CompletedAt: r.Completed}
+	if len(r.Due) >= 10 {
+		if d, err := streak.ParseDay(r.Due[:10]); err == nil {
+			t.Due = &d
+		}
+	}
+	return t, nil
+}
+
 func (c *Client) get(ctx context.Context, token, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	return c.send(ctx, http.MethodGet, token, path, nil, out)
+}
+
+func (c *Client) send(ctx context.Context, method, token, path string, body io.Reader, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("google tasks: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return fmt.Errorf("google tasks: status %d: %s", resp.StatusCode, body)
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		switch {
+		case resp.StatusCode == http.StatusForbidden && strings.Contains(string(msg), "SCOPE_INSUFFICIENT"),
+			resp.StatusCode == http.StatusForbidden && strings.Contains(string(msg), "insufficient"):
+			return ErrNeedsWriteAccess
+		case resp.StatusCode == http.StatusNotFound && method != http.MethodGet:
+			return ErrTaskGone
+		}
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return fmt.Errorf("google tasks: status %d: %s", resp.StatusCode, msg)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("google tasks: decode: %w", err)
@@ -301,16 +382,25 @@ func (c *Client) get(ctx context.Context, token, path string, out any) error {
 }
 
 func (c *Client) accessToken(ctx context.Context, refreshToken string) (string, error) {
+	tok, err := c.refresh(ctx, refreshToken)
+	return tok.AccessToken, err
+}
+
+// refresh trades a refresh token for an access token and its scopes.
+func (c *Client) refresh(ctx context.Context, refreshToken string) (tokenResponse, error) {
 	tok, err := c.postToken(ctx, url.Values{
 		"client_id":     {c.ClientID},
 		"client_secret": {c.ClientSecret},
 		"refresh_token": {refreshToken},
 		"grant_type":    {"refresh_token"},
 	})
-	if err != nil {
-		return "", err
+	// The refresh token was issued to another OAuth client, usually because
+	// GOOGLE_CLIENT_ID changed since sign-in. Signing in again issues one for
+	// the current client.
+	if errors.Is(err, errUnauthorizedClient) {
+		return tokenResponse{}, ErrReconnect
 	}
-	return tok.AccessToken, nil
+	return tok, err
 }
 
 type tokenResponse struct {
@@ -343,8 +433,11 @@ func (c *Client) postToken(ctx context.Context, form url.Values) (tokenResponse,
 			Description string `json:"error_description"`
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&e)
-		if e.Error == "invalid_grant" {
+		switch e.Error {
+		case "invalid_grant":
 			return tokenResponse{}, ErrReconnect
+		case "unauthorized_client":
+			return tokenResponse{}, fmt.Errorf("%w: %s", errUnauthorizedClient, e.Description)
 		}
 		return tokenResponse{}, fmt.Errorf("google token: status %d: %s %s", resp.StatusCode, e.Error, e.Description)
 	}
