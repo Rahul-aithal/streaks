@@ -1,23 +1,39 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { Check, CircleCheck, Flame, GitBranch, ListTodo, Plus, RefreshCw } from "lucide-react"
+import { lazy, Suspense, useState } from "react"
+import { Check, CircleCheck, Flame, GitBranch, ListTodo, Plus, RefreshCw, Snowflake, Sparkles } from "lucide-react"
 import { dayCellClass, DAY_LABEL } from "@/components/day-cell"
 import { GoogleSignInButton } from "@/components/google-button"
+import { MoreList } from "@/components/more-list"
 import { QueryError } from "@/components/query-error"
+import { RewardsSkeleton } from "@/components/rewards-skeleton"
 import { ProgressRing } from "@/components/progress-ring"
 import { StatTile } from "@/components/streak-stats"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { api, GOOGLE_RECONNECT_URL, type Summary, type SummaryHabit, type SyncRun } from "@/lib/api"
+import { api, GOOGLE_RECONNECT_URL, type Summary, type SummaryHabit, type SummaryTask, type SyncRun } from "@/lib/api"
 import { formatDay, formatInstant, formatLong } from "@/lib/dates"
 import { useApiMutation } from "@/lib/use-api-mutation"
+import { rewardsQuery, summaryQuery } from "@/lib/queries"
 import { firstName, useMe } from "@/lib/use-me"
 import { cn } from "@/lib/utils"
 
-export const Route = createFileRoute("/_app/")({ component: TodayPage })
+// The panel and its data load when the Rewards tab is first reached.
+const loadRewards = () => import("@/components/rewards-panel")
+const RewardsPanel = lazy(loadRewards)
+
+export const Route = createFileRoute("/_app/")({
+  // Starts the request with the navigation instead of after the page renders, in
+  // parallel with the sign-in check. Not awaited: the page shows its own skeleton.
+  loader: ({ context }) => {
+    if (typeof window !== "undefined") void context.queryClient.prefetchQuery(summaryQuery)
+  },
+  component: TodayPage,
+})
 
 function greeting() {
   const hour = Number(
@@ -28,7 +44,7 @@ function greeting() {
 }
 
 function TodayPage() {
-  const summary = useQuery({ queryKey: ["summary"], queryFn: api.summary })
+  const summary = useQuery(summaryQuery)
   const { active } = useMe()
 
   return (
@@ -39,32 +55,44 @@ function TodayPage() {
         </h1>
         <p className="text-sm text-muted-foreground">{summary.data ? formatLong(summary.data.date) : " "}</p>
       </div>
-      {summary.isPending && (
-        <div className="flex flex-col gap-6" aria-busy>
-          <Skeleton className="h-24" />
-          <Skeleton className="h-64" />
-        </div>
-      )}
+      {summary.isPending && <TodaySkeleton />}
       {summary.isError && <QueryError error={summary.error} onRetry={() => void summary.refetch()} />}
       {summary.data && <TodayContent summary={summary.data} />}
     </>
   )
 }
 
+function TodaySkeleton() {
+  return (
+    <div className="flex flex-col gap-5" aria-busy>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-[72px]" />
+        ))}
+      </div>
+      <div className="grid gap-5 lg:grid-cols-5">
+        <Skeleton className="h-72 lg:col-span-3" />
+        <Skeleton className="h-72 lg:col-span-2" />
+      </div>
+    </div>
+  )
+}
+
 function TodayContent({ summary }: { summary: Summary }) {
-  const scheduled = summary.habits.filter((h) => h.status !== "rest")
+  // A cool-off day takes a habit off today's list, like a rest day.
+  const scheduled = summary.habits.filter((h) => h.status === "done" || h.status === "pending")
   const done = scheduled.filter((h) => h.status === "done").length
   const { daily } = summary.streaks
 
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardContent className="flex items-center gap-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Card size="sm">
+          <CardContent className="flex items-center gap-3">
             <ProgressRing done={done} total={scheduled.length} />
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">Today</p>
-              <p className="font-semibold">
+              <p className="truncate font-semibold">
                 {scheduled.length === 0
                   ? "Nothing scheduled"
                   : done === scheduled.length
@@ -80,12 +108,61 @@ function TodayContent({ summary }: { summary: Summary }) {
           label="Tasks today"
           value={summary.tasks.total === 0 ? "None" : `${summary.tasks.completed} of ${summary.tasks.total}`}
         />
+        <StatTile
+          icon={Sparkles}
+          label="Reward points"
+          value={`${summary.rewards.balance} ${summary.rewards.balance === 1 ? "pt" : "pts"}`}
+        />
       </div>
-      <div className="grid items-start gap-6 lg:grid-cols-3">
-        <HabitsCard summary={summary} className="lg:col-span-2" />
-        <TasksCard summary={summary} />
+      {/* Habits on the left; tasks and rewards share one card on the right, so the
+          page is one screen instead of three stacked cards. */}
+      <div className="grid items-start gap-5 lg:grid-cols-5">
+        <HabitsCard summary={summary} className="lg:col-span-3" />
+        <SideCard summary={summary} />
       </div>
     </>
+  )
+}
+
+function SideCard({ summary }: { summary: Summary }) {
+  const [tab, setTab] = useState("tasks")
+  const queryClient = useQueryClient()
+  const openTasks = summary.tasks.items.length + summary.tasks.later.length
+  // Hovering or focusing the tab is enough warning to fetch the code and data.
+  const warmRewards = () => {
+    void loadRewards()
+    void queryClient.prefetchQuery(rewardsQuery)
+  }
+
+  return (
+    <Card className="lg:col-span-2">
+      <Tabs value={tab} onValueChange={setTab} className="gap-4">
+        <CardHeader>
+          <TabsList className="w-full">
+            <TabsTrigger value="tasks">
+              <ListTodo />
+              Tasks
+              {openTasks > 0 && <span className="text-xs text-muted-foreground tabular-nums">{openTasks}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="rewards" onPointerEnter={warmRewards} onFocus={warmRewards}>
+              <Sparkles />
+              Rewards
+              <span className="text-xs text-muted-foreground tabular-nums">{summary.rewards.balance}</span>
+            </TabsTrigger>
+          </TabsList>
+        </CardHeader>
+        <CardContent>
+          <TabsContent value="tasks">
+            <TasksPanel summary={summary} />
+          </TabsContent>
+          <TabsContent value="rewards">
+            <Suspense fallback={<RewardsSkeleton />}>
+              <RewardsPanel summary={summary} />
+            </Suspense>
+          </TabsContent>
+        </CardContent>
+      </Tabs>
+    </Card>
   )
 }
 
@@ -153,7 +230,7 @@ function HabitRow({ habit, day }: { habit: SummaryHabit; day: string }) {
         <span
           className={cn(
             "flex size-9 shrink-0 items-center justify-center rounded-full border",
-            isDone ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground",
+            isDone ? "border-primary bg-primary text-primary-foreground" : "border-control text-muted-foreground",
           )}
           title={isDone ? "Completed by GitHub activity" : "Completes automatically on GitHub activity"}
         >
@@ -170,7 +247,7 @@ function HabitRow({ habit, day }: { habit: SummaryHabit; day: string }) {
             "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             isDone
               ? "border-primary bg-primary text-primary-foreground"
-              : "border-muted-foreground/30 text-transparent hover:border-primary hover:text-primary/50",
+              : "border-control text-transparent hover:border-primary hover:text-primary/50",
           )}
         >
           <Check className="size-5" />
@@ -186,6 +263,11 @@ function HabitRow({ habit, day }: { habit: SummaryHabit; day: string }) {
         </Link>
         <p className="text-xs text-muted-foreground tabular-nums">
           {habit.status === "rest" && !isDone && "Rest day · "}
+          {habit.status === "cool_off" && !isDone && (
+            <>
+              <Snowflake className="inline size-3 text-sky-500" /> Cool-off day ·{" "}
+            </>
+          )}
           Best {habit.streak.longest}
           {habit.contributions !== undefined &&
             ` · ${habit.contributions} ${habit.contributions === 1 ? "contribution" : "contributions"} today`}
@@ -215,71 +297,117 @@ function HabitRow({ habit, day }: { habit: SummaryHabit; day: string }) {
   )
 }
 
-function TasksCard({ summary }: { summary: Summary }) {
+function TasksPanel({ summary }: { summary: Summary }) {
   const { tasks } = summary
+  // An API that hasn't been redeployed yet won't send this; treat it as empty.
+  const later = tasks.later ?? []
   const sync = useApiMutation(api.syncGoogleTasks)
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>Tasks</CardTitle>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className={cn("text-sm tabular-nums", tasks.overdue > 0 ? "font-medium text-destructive" : "text-muted-foreground")}>
+          {tasks.overdue > 0 ? `${tasks.overdue} overdue` : "Google Tasks"}
+        </p>
         <Button
           variant="ghost"
-          size="icon"
+          size="icon-sm"
           aria-label="Sync Google Tasks"
           disabled={sync.isPending}
           onClick={() => sync.mutate(undefined)}
         >
           <RefreshCw className={sync.isPending ? "animate-spin" : ""} />
         </Button>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {tasks.needs_reconnect && (
-          <div className="flex flex-col gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-            <p>Google access expired, so these tasks may be out of date.</p>
-            <GoogleSignInButton href={GOOGLE_RECONNECT_URL} size="sm">
-              Reconnect Google
-            </GoogleSignInButton>
-          </div>
+      </div>
+      {tasks.needs_reconnect && (
+        <div className="flex flex-col gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          <p>Google access expired, so these tasks may be out of date.</p>
+          <GoogleSignInButton href={GOOGLE_RECONNECT_URL} size="sm">
+            Reconnect Google
+          </GoogleSignInButton>
+        </div>
+      )}
+      {tasks.read_only && !tasks.needs_reconnect && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/50 p-3 text-sm">
+          <p className="text-muted-foreground">
+            Streaks can see your tasks but can&apos;t tick them off yet. Reconnect Google and allow it to manage
+            your tasks.
+          </p>
+          <GoogleSignInButton href={GOOGLE_RECONNECT_URL} size="sm">
+            Reconnect Google
+          </GoogleSignInButton>
+        </div>
+      )}
+      {tasks.items.length === 0 && later.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 py-6 text-center text-sm text-muted-foreground">
+          <CircleCheck className="size-6" />
+          No open tasks.
+        </div>
+      ) : (
+        <>
+          {tasks.items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nothing due today.</p>
+          ) : (
+            <TaskList tasks={tasks.items} />
+          )}
+          {later.length > 0 && (
+            <section className="flex flex-col gap-2 border-t pt-3">
+              <h3 className="text-xs font-medium text-muted-foreground">Upcoming &amp; no date</h3>
+              <TaskList tasks={later} limit={LATER_LIMIT} upcoming />
+            </section>
+          )}
+        </>
+      )}
+      <SyncNote label="Google Tasks" run={tasks.sync} />
+    </div>
+  )
+}
+
+const LATER_LIMIT = 4
+
+function TaskList({ tasks, limit, upcoming }: { tasks: SummaryTask[]; limit?: number; upcoming?: boolean }) {
+  return (
+    <MoreList
+      items={tasks}
+      limit={limit ?? tasks.length}
+      render={(task) => <TaskItem key={task.id} task={task} showDue={upcoming || task.overdue} />}
+    />
+  )
+}
+
+function TaskItem({ task, showDue }: { task: SummaryTask; showDue: boolean }) {
+  const name = task.title || "Untitled task"
+  const toggle = useApiMutation(() => (task.status === "completed" ? api.reopenTask(task.id) : api.completeTask(task.id)))
+  // Show the tap right away, like habits do; it settles when the refetch lands.
+  const done = toggle.isPending ? task.status !== "completed" : task.status === "completed"
+  return (
+    <li className="flex items-start gap-2.5 text-sm">
+      <button
+        type="button"
+        aria-label={done ? `Mark ${name} as not done` : `Mark ${name} as done`}
+        aria-pressed={done}
+        disabled={toggle.isPending}
+        onClick={() => toggle.mutate(undefined)}
+        className={cn(
+          "group/check mt-px flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 transition-all outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait",
+          done
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-control text-transparent hover:border-primary hover:text-primary/60",
         )}
-        {tasks.overdue > 0 && (
-          <p className="text-sm text-destructive tabular-nums">{tasks.overdue} overdue</p>
+      >
+        <Check className="size-3 transition-transform group-active/check:scale-90" strokeWidth={3} />
+      </button>
+      <span className="min-w-0 flex-1">
+        <span className={cn(done && "text-muted-foreground line-through", !task.title && "text-muted-foreground italic")}>
+          {task.title || "Untitled task"}
+        </span>
+        {task.due && !done && showDue && (
+          <span className={cn("block text-xs", task.overdue ? "text-destructive" : "text-muted-foreground")}>
+            Due {formatDay(task.due, { day: "numeric", month: "short" })}
+          </span>
         )}
-        {tasks.items.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-6 text-center text-sm text-muted-foreground">
-            <CircleCheck className="size-6" />
-            Nothing due today.
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {tasks.items.map((task) => {
-              const done = task.status === "completed"
-              return (
-                <li key={task.id} className="flex items-start gap-2 text-sm">
-                  <span
-                    className={cn(
-                      "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-                      done && "border-primary bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {done && <Check className="size-3" />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={done ? "text-muted-foreground line-through" : ""}>{task.title}</span>
-                    {task.overdue && task.due && (
-                      <span className="block text-xs text-destructive">
-                        Due {formatDay(task.due, { day: "numeric", month: "short" })}
-                      </span>
-                    )}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-        <SyncNote label="Google Tasks" run={tasks.sync} />
-      </CardContent>
-    </Card>
+      </span>
+    </li>
   )
 }
 

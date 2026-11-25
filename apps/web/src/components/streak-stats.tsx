@@ -23,15 +23,30 @@ export function StatTile({ icon: Icon, label, value }: { icon: LucideIcon; label
 }
 
 export function StreakStats({ streak }: { streak: StreakResult }) {
+  const items = [
+    { icon: Flame, label: "Current streak", value: plural(streak.current) },
+    { icon: Trophy, label: "Longest streak", value: plural(streak.longest) },
+    {
+      icon: CalendarCheck,
+      label: "Last completed",
+      value: streak.last_completed ? formatDay(streak.last_completed, { day: "numeric", month: "short" }) : "Never",
+    },
+  ]
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      <StatTile icon={Flame} label="Current streak" value={plural(streak.current)} />
-      <StatTile icon={Trophy} label="Longest streak" value={plural(streak.longest)} />
-      <StatTile
-        icon={CalendarCheck}
-        label="Last completed"
-        value={streak.last_completed ? formatDay(streak.last_completed, { day: "numeric", month: "short" }) : "Never"}
-      />
-    </div>
+    <Card size="sm">
+      <CardContent className="grid grid-cols-3 divide-x">
+        {items.map(({ icon: Icon, label, value }) => (
+          <div key={label} className="flex min-w-0 flex-col gap-0.5 px-3 first:pl-0 last:pr-0 sm:flex-row sm:items-center sm:gap-3">
+            <span className="hidden size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary sm:flex">
+              <Icon className="size-4.5" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-xs text-muted-foreground">{label}</p>
+              <p className="truncate text-base font-semibold tabular-nums sm:text-lg">{value}</p>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   )
 }

@@ -1,6 +1,8 @@
 import { QueryClient } from "@tanstack/react-query"
 import { createRouter } from "@tanstack/react-router"
-import { ApiError } from "@/lib/api"
+import { LoadingScreen } from "@/components/loading"
+import { ErrorPage, NotFoundPage } from "@/components/status-page"
+import { retryDelay, shouldRetry } from "@/lib/query-retry"
 import { routeTree } from "./routeTree.gen"
 
 export function getRouter() {
@@ -8,15 +10,20 @@ export function getRouter() {
     defaultOptions: {
       queries: {
         staleTime: 60_000,
-        // A second try helps with a Neon cold start. Being signed out won't change.
-        retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 1,
+        retry: shouldRetry,
+        retryDelay,
       },
     },
   })
   return createRouter({
     routeTree,
     context: { queryClient },
-    defaultPreload: false,
+    // Hovering a link loads that page's code and starts its data.
+    defaultPreload: "intent",
+    defaultPreloadStaleTime: 0,
+    defaultPendingComponent: LoadingScreen,
+    defaultErrorComponent: ({ error, reset }) => <ErrorPage error={error} onRetry={reset} />,
+    defaultNotFoundComponent: () => <NotFoundPage />,
     scrollRestoration: true,
   })
 }

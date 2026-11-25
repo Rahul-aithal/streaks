@@ -1,4 +1,4 @@
-import { Check, LogOut, Plus, Settings } from "lucide-react"
+import { Check, Loader2, LogOut, Plus, Settings } from "lucide-react"
 import { Link } from "@tanstack/react-router"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
@@ -82,14 +82,33 @@ export function AccountMenu() {
           </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={signOut.isPending} onSelect={() => signOut.mutate(undefined)}>
-          <LogOut />
-          <span className="truncate">Sign out of {active.email}</span>
+        {/* The menu stays open while this runs; the page reloads when it's done. */}
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={signOut.isPending || signOutAll.isPending}
+          onSelect={(e) => {
+            e.preventDefault()
+            signOut.mutate(undefined)
+          }}
+          className="py-2"
+        >
+          {signOut.isPending ? <Loader2 className="animate-spin" /> : <LogOut />}
+          <span className="flex min-w-0 flex-col">
+            <span className="font-medium">{signOut.isPending ? "Signing out…" : "Sign out"}</span>
+            <span className="truncate text-xs font-normal text-muted-foreground">{active.email}</span>
+          </span>
         </DropdownMenuItem>
         {others.length > 0 && (
-          <DropdownMenuItem disabled={signOutAll.isPending} onSelect={() => signOutAll.mutate(undefined)}>
-            <LogOut />
-            Sign out of all accounts
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={signOut.isPending || signOutAll.isPending}
+            onSelect={(e) => {
+              e.preventDefault()
+              signOutAll.mutate(undefined)
+            }}
+          >
+            {signOutAll.isPending ? <Loader2 className="animate-spin" /> : <LogOut />}
+            {signOutAll.isPending ? "Signing out…" : `Sign out of all ${accounts.length} accounts`}
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
