@@ -9,10 +9,19 @@ describe("shouldRetry", () => {
   })
 
   it("retries a 5xx up to three times", () => {
-    const err = new ApiError("down", 504)
+    const err = new ApiError("down", 500)
     expect(shouldRetry(0, err)).toBe(true)
     expect(shouldRetry(2, err)).toBe(true)
     expect(shouldRetry(3, err)).toBe(false)
+  })
+
+  it("retries a wake status once, since the Worker already burned its budget", () => {
+    for (const status of [502, 503, 504]) {
+      const err = new ApiError("waking", status)
+      expect(shouldRetry(0, err)).toBe(true)
+      expect(shouldRetry(1, err)).toBe(true)
+      expect(shouldRetry(2, err)).toBe(false)
+    }
   })
 
   it("retries network errors, which are not ApiErrors", () => {
