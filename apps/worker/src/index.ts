@@ -8,12 +8,15 @@ const SYNC_CRON = "0 */6 * * *"
 const WAKE_STATUSES = new Set([502, 503, 504])
 const WAKE_BUDGET_MS = 55_000
 const WAKE_RETRY_MS = 3_000
+// Render holds the connection while booting and answers within a minute, but a
+// connection that never answers would pin the Worker forever without this.
+const ATTEMPT_TIMEOUT_MS = 60_000
 
 async function fetchWakingApi(target: URL, init: RequestInit, retry: boolean): Promise<Response> {
   const deadline = Date.now() + WAKE_BUDGET_MS
   for (;;) {
     try {
-      const res = await fetch(target, init)
+      const res = await fetch(target, { ...init, signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS) })
       if (!retry || !WAKE_STATUSES.has(res.status) || Date.now() + WAKE_RETRY_MS > deadline) return res
       await res.body?.cancel()
     } catch (err) {
@@ -52,6 +55,7 @@ export default {
   },
 
   async scheduled(controller, env) {
+    const started = Date.now()
     let path: string
     switch (controller.cron) {
       case REMINDERS_CRON:
@@ -61,21 +65,34 @@ export default {
         path = "/jobs/sync"
         break
       default: {
-        // Keep-awake ping. /healthz doesn't touch the database, so Neon still sleeps.
-        const res = await fetch(new URL("/healthz", env.API_ORIGIN))
+        // Keep-awake ping, with the same wake retries as a browser request: a
+        // ping that lands on a sleeping Render stays until the API answers.
+        // /healthz doesn't touch the database, so Neon still sleeps.
+        const res = await fetchWakingApi(new URL("/healthz", env.API_ORIGIN), {}, true)
         await res.body?.cancel()
+        if (!res.ok) {
+          // Throwing marks the cron run as failed in the Cloudflare dashboard.
+          throw new Error(`keep-awake: HTTP ${res.status}`)
+        }
+        console.log("keep-awake", res.status, `${Date.now() - started}ms`)
         return
       }
     }
-    const res = await fetch(new URL(path, env.API_ORIGIN), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.JOBS_SECRET}` },
-    })
+    // Both jobs are safe to re-run: reminder sends are claimed once per window
+    // and syncs upsert, so retrying while Render wakes can't double-send.
+    const res = await fetchWakingApi(
+      new URL(path, env.API_ORIGIN),
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.JOBS_SECRET}` },
+      },
+      true,
+    )
     const body = await res.text()
     if (!res.ok) {
       // Throwing marks the cron run as failed in the Cloudflare dashboard.
       throw new Error(`${path}: HTTP ${res.status}: ${body.slice(0, 500)}`)
     }
-    console.log(path, body)
+    console.log(path, body, `${Date.now() - started}ms`)
   },
 } satisfies ExportedHandler<Env>

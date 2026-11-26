@@ -116,7 +116,7 @@ describe("scheduled", () => {
     expect(String(target)).toBe("https://api.test/jobs/reminders")
     expect(init.method).toBe("POST")
     expect(init.headers.Authorization).toBe("Bearer s3cret")
-    expect(log).toHaveBeenCalledWith("/jobs/reminders", "sent")
+    expect(log).toHaveBeenCalledWith("/jobs/reminders", "sent", "0ms")
   })
 
   it("posts the sync job", async () => {
@@ -126,6 +126,17 @@ describe("scheduled", () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.test/jobs/sync")
   })
 
+  it("retries a job while the API wakes up, then succeeds", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValueOnce(new Response("synced"))
+    vi.spyOn(console, "log").mockImplementation(() => {})
+    const pending = cron("0 */6 * * *")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await pending
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it("fails the run when a job returns an error", async () => {
     fetchMock.mockResolvedValue(new Response("boom", { status: 500 }))
     await expect(cron("0 */6 * * *")).rejects.toThrow("/jobs/sync: HTTP 500: boom")
@@ -133,12 +144,36 @@ describe("scheduled", () => {
 
   it("pings /healthz for the keep-awake cron", async () => {
     fetchMock.mockResolvedValue(new Response("ok"))
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
     await cron("*/14 1-18 * * *")
     expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.test/healthz")
+    expect(log).toHaveBeenCalledWith("keep-awake", 200, "0ms")
+  })
+
+  it("keeps pinging until a sleeping API answers", async () => {
+    fetchMock.mockReset()
+    fetchMock
+      .mockResolvedValueOnce(new Response("", { status: 502 }))
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(new Response("ok"))
+    vi.spyOn(console, "log").mockImplementation(() => {})
+    const pending = cron("*/14 1-18 * * *")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await pending
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it("fails the run when the API never answers the ping", async () => {
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => new Response("", { status: 503 }))
+    const assertion = expect(cron("*/14 1-18 * * *")).rejects.toThrow("keep-awake: HTTP 503")
+    await vi.advanceTimersByTimeAsync(60_000)
+    await assertion
   })
 
   it("tolerates a ping with no body", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    vi.spyOn(console, "log").mockImplementation(() => {})
     await cron("*/14 1-18 * * *")
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })

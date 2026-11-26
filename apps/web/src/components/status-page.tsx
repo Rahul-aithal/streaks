@@ -26,12 +26,12 @@ export function StatusPage({
   title: string
   message: string
   children?: ReactNode // The actions.
-  fill?: boolean // Take the whole screen, or sit inside the page.
+  fill?: boolean // Take the whole screen, or fill the page's remaining height.
 }) {
   const Icon = ICON[kind]
   return (
     <div
-      className={cn("page-enter flex items-center justify-center p-6", fill ? "min-h-svh" : "min-h-[50svh]")}
+      className={cn("page-enter flex items-center justify-center p-6", fill ? "min-h-svh" : "flex-1")}
       role={kind === "not_found" ? undefined : "alert"}
     >
       <div className="flex max-w-sm flex-col items-center gap-4 text-center">
