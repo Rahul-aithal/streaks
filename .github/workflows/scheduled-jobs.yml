@@ -1,0 +1,74 @@
+# Reminder emails, syncs and the daytime keep-awake, run from GitHub Actions.
+#
+# These used to be Cloudflare Worker crons, but a sleeping Render answers requests
+# from a Worker with an instant 502 and never boots for them. A request from
+# anywhere else, such as this runner, wakes it within a minute. So each run
+# wakes the API directly, then calls the job.
+#
+# Needs the JOBS_SECRET repository secret, with the same value as on Render.
+# Scheduled runs can start a few minutes late. Reminders allow for that: each
+# one may still go out up to an hour after its time, and a second run 15
+# minutes later retries any that failed (sends are claimed, so nobody gets two).
+name: Scheduled jobs
+
+on:
+  schedule:
+    # Times are UTC. IST is UTC+5:30.
+    # Reminders at 11:00, 17:00 and 22:00 IST, plus a retry 15 minutes later.
+    - cron: "30,45 5,11,16 * * *"
+    # GitHub and Google Tasks sync every 6 hours. Off the hour, when GitHub's
+    # scheduler is least busy.
+    - cron: "7 */6 * * *"
+    # Keeps the API awake from about 06:30 to 00:30 IST so the app opens quickly.
+    # About 560 of Render's 750 free hours a month. Delete it to let the API sleep.
+    - cron: "*/10 1-18 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: What to run
+        type: choice
+        options: [wake, reminders, sync]
+        default: wake
+
+permissions: {}
+
+jobs:
+  run:
+    name: Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The Render service. The same as API_ORIGIN in apps/worker/wrangler.jsonc.
+      API_ORIGIN: https://streaks-api-6v7j.onrender.com
+      SCHEDULE: ${{ github.event.schedule }}
+      INPUT_JOB: ${{ inputs.job }}
+      JOBS_SECRET: ${{ secrets.JOBS_SECRET }}
+    steps:
+      - name: Wake the API and run the job
+        run: |
+          case "$SCHEDULE" in
+            "30,45 5,11,16 * * *") job=reminders ;;
+            "7 */6 * * *") job=sync ;;
+            "") job="${INPUT_JOB:-wake}" ;;
+            *) job=wake ;;
+          esac
+          echo "Job: $job"
+
+          # Render holds this request while the API boots (20 s to a minute), so a
+          # 200 means it's up. Retry in case it answers 502/503 mid-boot.
+          start=$(date +%s)
+          curl --fail-with-body -sS --max-time 90 --retry 4 --retry-delay 10 --retry-all-errors \
+            "$API_ORIGIN/healthz"
+          echo
+          echo "API is up after $(( $(date +%s) - start ))s"
+          [ "$job" = wake ] && exit 0
+
+          if [ -z "$JOBS_SECRET" ]; then
+            echo "::error::Add the JOBS_SECRET repository secret (the same value as on Render)."
+            exit 1
+          fi
+          # Not retried: a reminder run already retries failed sends itself, and the
+          # 15-minute rerun picks up anything left.
+          curl --fail-with-body -sS --max-time 300 -X POST \
+            -H "Authorization: Bearer $JOBS_SECRET" "$API_ORIGIN/jobs/$job"
+          echo

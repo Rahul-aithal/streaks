@@ -1,12 +1,12 @@
 import { ApiError } from "@/lib/api"
 
-// What the Worker already rode out while Render wakes up.
+// What Render's edge answers while the API is asleep or booting.
 const WAKE_STATUSES = new Set([502, 503, 504])
 
-// Retries ride out a Render or Neon cold start. A wake status has already been
-// retried by the Worker for up to 55 seconds before it reached the browser, so
-// it gets one more chance instead of three — otherwise a sleeping API keeps the
-// page spinning for minutes. Other 5xx retry as before. A 4xx (being signed
+// Retries ride out a Render or Neon cold start. A read that hit a sleeping API
+// has already waited for the browser to wake it (lib/wake.ts) and been sent
+// again, so it gets one more chance instead of three — otherwise a dead API
+// keeps the page spinning for minutes. Other 5xx retry as before. A 4xx (being signed
 // out, a bad request) won't change on retry.
 export function shouldRetry(count: number, error: Error): boolean {
   if (error instanceof ApiError && error.status < 500) return false
