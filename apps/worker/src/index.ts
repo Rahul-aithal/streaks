@@ -1,29 +1,27 @@
-// Streaks' front door: static app, /api proxy, and the cron that wakes the API.
+// Streaks' front door: serves the static app and forwards /api to the Go API.
+//
+// The API runs on Render's free plan, which sleeps when idle. A sleeping Render
+// answers requests from a Worker with an instant 502 and never boots for them
+// (Cloudflare analytics showed every Worker request getting one for 20 hours),
+// but a request straight from a browser or a server wakes it within a minute.
+// So the Worker can't wake the API itself. Instead it tells the browser where to
+// knock, in the X-Api-Wake header, and the browser wakes it (see
+// apps/web/src/lib/wake.ts). Scheduled jobs run from GitHub Actions for the same
+// reason (.github/workflows/scheduled-jobs.yml).
 
-const REMINDERS_CRON = "30,45 5,11,16 * * *"
-const SYNC_CRON = "0 */6 * * *"
-
-// Render's free plan sleeps and takes up to a minute to wake. While it does, the
-// edge answers 502/503/504, so safe requests are retried instead of failing.
+// What Render's edge answers while the API is asleep or still booting.
 const WAKE_STATUSES = new Set([502, 503, 504])
-const WAKE_BUDGET_MS = 55_000
-const WAKE_RETRY_MS = 3_000
-// Render holds the connection while booting and answers within a minute, but a
-// connection that never answers would pin the Worker forever without this.
+// A connection that never answers would otherwise hold the request forever.
 const ATTEMPT_TIMEOUT_MS = 60_000
 
-async function fetchWakingApi(target: URL, init: RequestInit, retry: boolean): Promise<Response> {
-  const deadline = Date.now() + WAKE_BUDGET_MS
-  for (;;) {
-    try {
-      const res = await fetch(target, { ...init, signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS) })
-      if (!retry || !WAKE_STATUSES.has(res.status) || Date.now() + WAKE_RETRY_MS > deadline) return res
-      await res.body?.cancel()
-    } catch (err) {
-      if (!retry || Date.now() + WAKE_RETRY_MS > deadline) throw err
-    }
-    await new Promise((resolve) => setTimeout(resolve, WAKE_RETRY_MS))
-  }
+export const WAKE_HEADER = "X-Api-Wake"
+
+// Marks a response as "the API is asleep", with the URL that wakes it.
+function asleep(res: Response, env: Env): Response {
+  const out = new Response(res.body, res)
+  out.headers.set(WAKE_HEADER, new URL("/healthz", env.API_ORIGIN).toString())
+  out.headers.set("Cache-Control", "no-store")
+  return out
 }
 
 export default {
@@ -33,66 +31,29 @@ export default {
       return env.ASSETS.fetch(request)
     }
     const path = url.pathname.slice("/api".length) || "/"
-    // The jobs routes are for the cron below, not the public.
+    // The jobs routes are for the scheduled workflow, which calls Render directly.
     if (path.startsWith("/jobs/")) {
       return new Response("Not found", { status: 404 })
     }
-    const target = new URL(path + url.search, env.API_ORIGIN)
     const headers = new Headers(request.headers)
     headers.delete("Authorization")
-    const safe = request.method === "GET" || request.method === "HEAD"
-    return fetchWakingApi(
-      target,
-      {
+    let res: Response
+    try {
+      res = await fetch(new URL(path + url.search, env.API_ORIGIN), {
         method: request.method,
         headers,
         body: request.body,
         // Pass redirects (OAuth, login) back to the browser rather than following them.
         redirect: "manual",
-      },
-      safe,
-    )
-  },
-
-  async scheduled(controller, env) {
-    const started = Date.now()
-    let path: string
-    switch (controller.cron) {
-      case REMINDERS_CRON:
-        path = "/jobs/reminders"
-        break
-      case SYNC_CRON:
-        path = "/jobs/sync"
-        break
-      default: {
-        // Keep-awake ping, with the same wake retries as a browser request: a
-        // ping that lands on a sleeping Render stays until the API answers.
-        // /healthz doesn't touch the database, so Neon still sleeps.
-        const res = await fetchWakingApi(new URL("/healthz", env.API_ORIGIN), {}, true)
-        await res.body?.cancel()
-        if (!res.ok) {
-          // Throwing marks the cron run as failed in the Cloudflare dashboard.
-          throw new Error(`keep-awake: HTTP ${res.status}`)
-        }
-        console.log("keep-awake", res.status, `${Date.now() - started}ms`)
-        return
-      }
+        signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
+      })
+    } catch {
+      // Timed out or the connection failed: treat it like a sleeping API.
+      res = new Response(JSON.stringify({ error: "The API didn't answer." }), {
+        status: 504,
+        headers: { "Content-Type": "application/json" },
+      })
     }
-    // Both jobs are safe to re-run: reminder sends are claimed once per window
-    // and syncs upsert, so retrying while Render wakes can't double-send.
-    const res = await fetchWakingApi(
-      new URL(path, env.API_ORIGIN),
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.JOBS_SECRET}` },
-      },
-      true,
-    )
-    const body = await res.text()
-    if (!res.ok) {
-      // Throwing marks the cron run as failed in the Cloudflare dashboard.
-      throw new Error(`${path}: HTTP ${res.status}: ${body.slice(0, 500)}`)
-    }
-    console.log(path, body, `${Date.now() - started}ms`)
+    return WAKE_STATUSES.has(res.status) ? asleep(res, env) : res
   },
 } satisfies ExportedHandler<Env>

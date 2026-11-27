@@ -123,12 +123,22 @@ Everything runs on free plans, with no card needed:
 
 | Part | Where | Free allowance |
 |---|---|---|
-| Web app, `/api` proxy, cron | Cloudflare Worker (`apps/worker`) | 100,000 Worker requests a day; static files don't count |
+| Web app, `/api` proxy | Cloudflare Worker (`apps/worker`) | 100,000 Worker requests a day; static files don't count |
+| Reminders, syncs, keep-awake | GitHub Actions (`.github/workflows/scheduled-jobs.yml`) | Free for public repos |
 | Go API | Render free web service (`render.yaml`) | 750 hours a month; sleeps after 15 minutes idle |
 | Database | Neon free | Scales to zero when idle |
 | Email | Resend free | 100 emails a day |
 
-The browser only talks to the Worker. It serves the built app and forwards `/api/*` to Render, so cookies stay on one site. Because the API sleeps, its built-in timers are off in production (`JOBS_SECRET` is set). The Worker's cron calls `/jobs/reminders` at 11:00, 17:00 and 22:00 IST (plus a retry 15 minutes later) and `/jobs/sync` every 6 hours. A third cron pings `/healthz` from 07:00 to midnight IST so the app opens quickly. It uses about 560 of Render's 750 hours. Remove it from `apps/worker/wrangler.jsonc` to let the API sleep; the first visit after a sleep then takes up to a minute.
+The browser only talks to the Worker. It serves the built app and forwards `/api/*` to Render, so cookies stay on one site.
+
+**Waking the API.** A sleeping Render answers requests from a Cloudflare Worker with an instant `502` and doesn't boot for them; only a request from somewhere else wakes it. So the Worker can't wake the API. When Render answers `502`, `503` or `504`, the Worker adds an `X-Api-Wake` header with Render's `/healthz` URL. The browser then calls that URL directly, which boots the API in 20 seconds to a minute, and sends the request again (`apps/web/src/lib/wake.ts`). The loading screen shows random facts meanwhile.
+
+**Scheduled jobs.** The API's built-in timers are off in production (`JOBS_SECRET` is set). For the same reason, the schedule runs on GitHub Actions instead of Worker crons. Each run wakes Render, then:
+- calls `/jobs/reminders` at 11:00, 17:00 and 22:00 IST, plus a retry 15 minutes later;
+- calls `/jobs/sync` every 6 hours;
+- or pings `/healthz` every 10 minutes from 06:30 to 00:30 IST, so the app opens quickly. That uses about 560 of Render's 750 hours. Delete that schedule to let the API sleep.
+
+GitHub may start scheduled runs a few minutes late; a reminder can still go out up to an hour after its time. GitHub pauses scheduled workflows in a repo with no activity for 60 days. Run any job by hand from **Actions → Scheduled jobs → Run workflow**.
 
 1. **Migrate the database** from your machine: `make migrate`. Production can share the database you develop against. If it does, use the same `GOOGLE_TOKEN_KEY`, or stored tokens can't be decrypted.
 2. **Find your Worker URL.** Run `pnpm --filter worker exec wrangler login`. Your URL will be `https://streaks.<your-subdomain>.workers.dev`; the subdomain is under **Workers & Pages** in the Cloudflare dashboard. It's `<site>` below.
@@ -142,12 +152,12 @@ The browser only talks to the Worker. It serves the built app and forwards `/api
    Then copy the service URL, for example `https://streaks-api.onrender.com`.
 6. **Worker:**
    - Set `API_ORIGIN` in `apps/worker/wrangler.jsonc` to that URL.
-   - Run `pnpm --filter worker exec wrangler secret put JOBS_SECRET` and paste the same secret.
    - Run `make deploy-worker`.
+   - Add the same `JOBS_SECRET` as a GitHub repository secret: `gh secret set JOBS_SECRET`.
 7. **Check it:**
    - Open `<site>` and sign in.
    - Use **Settings → Send a test email**.
-   - In the Cloudflare dashboard, the Worker's **Settings → Trigger events** lists the crons, and **Logs** shows each run.
+   - In GitHub, run **Actions → Scheduled jobs → Run workflow** with `reminders` and check it goes green.
 
 The site is served at <https://streaks.devaithal.tech>, a Custom Domain attached in the Cloudflare dashboard under **Workers → streaks → Settings → Domains & Routes**. It isn't in `apps/worker/wrangler.jsonc` on purpose: deploying it from there needs a token with DNS access to the zone, while CI's token can only deploy this Worker.
 
@@ -262,6 +272,7 @@ apps/api/internal/syncer   Sync loop, and the sync-everyone job
 apps/api/migrations        Goose SQL, embedded in the binary
 apps/web/src/routes        Login, Today, habits list, habit detail, settings
 apps/web/public            Favicons and web manifest
-apps/worker                Cloudflare Worker: static app, /api proxy, cron
+apps/worker                Cloudflare Worker: static app, /api proxy
+.github/workflows          CI/CD, and the scheduled jobs (reminders, sync, keep-awake)
 render.yaml                Render Blueprint for the API
 ```

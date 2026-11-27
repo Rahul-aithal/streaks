@@ -1,6 +1,8 @@
 // Typed client for the Go API. Requests go through the Vite proxy at /api, and the
 // HttpOnly session cookie goes with them automatically.
 
+import { wakeApi, wakeUrlOf } from "@/lib/wake"
+
 export type Source = "manual" | "github"
 export type DayState = "done" | "saved" | "bonus" | "missed" | "pending" | "cool_off" | "rest"
 
@@ -140,13 +142,25 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, woke = false): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 204) return undefined as T
+
+  // The API is asleep: wake it from the browser (see lib/wake.ts), then send a
+  // read again. A sleeping API never saw the request, but a write is left for
+  // the person to retry rather than risk sending it twice.
+  const wakeUrl = woke ? null : wakeUrlOf(res)
+  if (wakeUrl) {
+    await wakeApi(wakeUrl)
+    if (method === "GET") {
+      void res.body?.cancel()
+      return request<T>(method, path, body, true)
+    }
+  }
 
   const data: unknown = await res.json().catch(() => null)
   if (!res.ok) {
